@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "players": [
+    { "name": "Parvin", "rating": 3.0, "notes": "" },
+    { "name": "Dilip", "rating": 3.0, "notes": "" },
+    { "name": "Kishore", "rating": 3.0, "notes": "" },
+    { "name": "Harish", "rating": 3.0, "notes": "" },
+    { "name": "Raghu", "rating": 3.0, "notes": "" },
+    { "name": "Ravi", "rating": 3.0, "notes": "" },
+    { "name": "Kavish", "rating": 3.0, "notes": "" },
+    { "name": "Chandu", "rating": 3.0, "notes": "" },
+    { "name": "Mahendra", "rating": 3.0, "notes": "" }
+  ]
+}

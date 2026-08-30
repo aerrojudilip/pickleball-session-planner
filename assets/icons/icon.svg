@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pickleball Planner">
+  <rect width="512" height="512" rx="96" fill="#2f7d4f"/>
+  <circle cx="256" cy="256" r="150" fill="#d7e825" stroke="#ffffff" stroke-width="16"/>
+  <g fill="#245f3d">
+    <circle cx="256" cy="180" r="18"/>
+    <circle cx="200" cy="230" r="18"/>
+    <circle cx="312" cy="230" r="18"/>
+    <circle cx="228" cy="292" r="18"/>
+    <circle cx="284" cy="292" r="18"/>
+    <circle cx="256" cy="330" r="18"/>
+  </g>
+</svg>
