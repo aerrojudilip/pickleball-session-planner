@@ -1,15 +1,277 @@
 import { test, expect } from "@playwright/test";
 
 import {
+  ADMIN_SESSION_KEY,
   CREDENTIALS_KEY,
   createTestDatabase,
+  configureCloud,
   DB_KEY,
   collectBrowserErrors,
+  isolateCloud,
   localDateString,
   seedDatabase,
 } from "./fixtures.js";
 
 test.describe("core browser journeys", () => {
+  test.beforeEach(async ({ page }) => {
+    await isolateCloud(page);
+  });
+
+  test("administrator routes require sign-in and sign-out closes access", async ({ page }) => {
+    await seedDatabase(page, createTestDatabase(), { authenticated: false });
+    const errors = collectBrowserErrors(page);
+
+    await page.goto("/#roster");
+    await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
+    await expect(page).toHaveURL(/#roster$/);
+
+    await page.getByRole("button", { name: "View statistics" }).click();
+    await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
+    await page.getByRole("button", { name: "Roster" }).click();
+
+    await page.getByLabel("Password").fill("not-the-administrator-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("alert")).toHaveText("Incorrect administrator username or password.");
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), ADMIN_SESSION_KEY)).toBeNull();
+
+    await page.evaluate((key) => sessionStorage.setItem(key, "authenticated"), ADMIN_SESSION_KEY);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await page.getByRole("button", { name: "Sign out administrator" }).click();
+    await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), ADMIN_SESSION_KEY)).toBeNull();
+    expect(errors).toEqual([]);
+  });
+
+  test("configured Supabase loads first and receives authenticated versioned writes", async ({ page }) => {
+    const localDatabase = createTestDatabase();
+    localDatabase.players[0].name = "Local Only";
+    const cloudDatabase = createTestDatabase();
+    cloudDatabase.players[0].name = "Cloud Source";
+    let authRequest = null;
+    const patchRequests = [];
+    let cloudVersion = 3;
+
+    await seedDatabase(page, localDatabase, {
+      authenticated: false,
+      syncState: {
+        projectUrl: "https://fixture.supabase.co",
+        stateId: "primary",
+        pending: false,
+        version: 2,
+        updatedAt: "2026-08-30T21:30:00.000Z",
+      },
+    });
+    await configureCloud(page);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      const request = route.request();
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "apikey, authorization, content-type, prefer",
+        "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+      };
+      if (request.method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+        return;
+      }
+      if (request.url().includes("/auth/v1/token")) {
+        authRequest = { url: request.url(), body: request.postDataJSON(), headers: request.headers() };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify({ access_token: "cloud-access", refresh_token: "cloud-refresh", expires_in: 3600 }),
+        });
+        return;
+      }
+      if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ document: cloudDatabase, version: cloudVersion, updated_at: "2026-08-30T22:00:00.000Z" }]),
+        });
+        return;
+      }
+      if (request.method() === "PATCH") {
+        patchRequests.push({ url: request.url(), body: request.postDataJSON(), headers: request.headers() });
+        cloudVersion += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ version: cloudVersion, updated_at: "2026-08-30T22:30:00.000Z" }]),
+        });
+        return;
+      }
+      await route.fulfill({ status: 204, headers: corsHeaders });
+    });
+    const errors = collectBrowserErrors(page);
+
+    await page.goto("/#roster");
+    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Source");
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Edit Cloud Source" })).toBeVisible();
+    expect(authRequest.body).toEqual({ email: "admin@pickleball-planner.app", password: "browser-secret" });
+    expect(authRequest.url).not.toContain("browser-secret");
+    expect(authRequest.headers.apikey).toBe("public-key");
+
+    await page.getByRole("button", { name: /Add player/ }).click();
+    const dialog = page.getByRole("dialog", { name: "Add player" });
+    await dialog.locator("#pf-name").fill("Cloud Added");
+    await dialog.getByRole("button", { name: "Add", exact: true }).click();
+    await expect.poll(() => patchRequests.length).toBe(1);
+    const [patchRequest] = patchRequests;
+    expect(patchRequest.url).toContain("version=eq.3");
+    expect(patchRequest.headers.authorization).toBe("Bearer cloud-access");
+    expect(patchRequest.body.version).toBe(4);
+    expect(patchRequest.body.document.players.some((player) => player.name === "Cloud Added")).toBe(true);
+
+    await page.getByRole("button", { name: "More" }).click();
+    const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
+    await page.getByRole("button", { name: "Dark", exact: true }).click();
+    await expect.poll(() => patchRequests.length).toBe(2);
+    await expect(cloudSection.getByRole("status")).toContainText("Version 5.");
+    expect(errors).toEqual([]);
+  });
+
+  test("a pending local cache conflicts instead of overwriting a newer cloud version", async ({ page }) => {
+    const localDatabase = createTestDatabase();
+    localDatabase.players[0].name = "Local Pending";
+    const cloudDatabase = createTestDatabase();
+    cloudDatabase.players[0].name = "Cloud Current";
+    let patchRequest = null;
+
+    await seedDatabase(page, localDatabase, {
+      authenticated: false,
+      syncState: {
+        projectUrl: "https://fixture.supabase.co",
+        stateId: "primary",
+        pending: true,
+        version: 3,
+        updatedAt: "2026-08-30T22:00:00.000Z",
+      },
+    });
+    await configureCloud(page);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      const request = route.request();
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "apikey, authorization, content-type, prefer",
+        "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+      };
+      if (request.method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+      } else if (request.url().includes("/auth/v1/token")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify({ access_token: "cloud-access", refresh_token: "cloud-refresh", expires_in: 3600 }),
+        });
+      } else if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
+        });
+      } else if (request.method() === "PATCH") {
+        patchRequest = { url: request.url(), body: request.postDataJSON() };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([]),
+        });
+      } else {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+      }
+    });
+
+    await page.goto("/#roster");
+    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Local Pending");
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Edit Local Pending" })).toBeVisible();
+    expect(patchRequest).toBeNull();
+
+    await page.getByRole("button", { name: "More" }).click();
+    const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
+    await expect(cloudSection.getByRole("status")).toContainText("changed on another device");
+    await cloudSection.getByRole("button", { name: "Sync now" }).click();
+    await expect.poll(() => Boolean(patchRequest)).toBe(true);
+    expect(patchRequest.url).toContain("version=eq.3");
+    expect(patchRequest.body.document.players[0].name).toBe("Local Pending");
+    await expect(page.getByText(/Cloud data changed on another device/)).toBeVisible();
+    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Local Pending");
+
+    await cloudSection.getByRole("button", { name: "Reload cloud data" }).click();
+    const confirm = page.getByRole("dialog", { name: "Use cloud data?" });
+    await confirm.getByRole("button", { name: "Use cloud data" }).click();
+    await page.getByRole("button", { name: "Roster" }).click();
+    await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
+    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Current");
+  });
+
+  test("a markerless legacy cache is preserved when cloud storage is first enabled", async ({ page }) => {
+    const localDatabase = createTestDatabase();
+    localDatabase.players[0].name = "Legacy Local";
+    const cloudDatabase = createTestDatabase();
+    cloudDatabase.players[0].name = "Cloud Current";
+    await seedDatabase(page, localDatabase, { authenticated: false });
+    await configureCloud(page);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
+      });
+    });
+
+    await page.goto("/#stats");
+    await expect(page.getByText(/Cloud data changed on another device/)).toBeVisible();
+    const cached = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), DB_KEY);
+    expect(cached.players[0].name).toBe("Legacy Local");
+    expect(cached._cloudSync).toMatchObject({ pending: true, version: null, stateId: "primary" });
+  });
+
+  test("corrupt local data is preserved without loading cloud data over it", async ({ page }) => {
+    let cloudRequests = 0;
+    await configureCloud(page);
+    await page.addInitScript((key) => localStorage.setItem(key, "{broken"), DB_KEY);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      if (route.request().url().includes("/auth/v1/token")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ access_token: "cloud-access", refresh_token: "cloud-refresh", expires_in: 3600 }),
+        });
+        return;
+      }
+      cloudRequests += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    });
+
+    await page.goto("/#stats");
+    await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
+    await expect(page.getByText(/Saved data was unreadable/)).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
+    expect(cloudRequests).toBe(0);
+
+    await page.getByRole("button", { name: "Roster" }).click();
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "More" }).click();
+    const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
+    await expect(cloudSection.getByRole("status")).toContainText("Browser data is unreadable");
+    await cloudSection.getByRole("button", { name: "Sync now" }).click();
+    await expect(cloudSection.getByRole("status")).toContainText("before syncing");
+    expect(cloudRequests).toBe(0);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
+  });
+
   test("375px roster stays usable and a new player persists after reload", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await seedDatabase(page, createTestDatabase());
@@ -74,7 +336,9 @@ test.describe("core browser journeys", () => {
 
     await expect.poll(() => page.evaluate((key) => {
       const db = JSON.parse(localStorage.getItem(key));
-      return db.bookings[0].sessionId === db.sessions[0].id && db.sessions[0].bookingId === db.bookings[0].id;
+      const booking = db.bookings[0];
+      const session = db.sessions[0];
+      return Boolean(booking && session && booking.sessionId === session.id && session.bookingId === booking.id);
     }, DB_KEY)).toBe(true);
 
     await page.getByRole("button", { name: "Schedule" }).click();
@@ -137,9 +401,10 @@ test.describe("core browser journeys", () => {
       const db = JSON.parse(localStorage.getItem(key));
       const player = db.players.find((item) => item.name === "Late Arrival");
       const session = db.sessions[0];
-      const nextRound = session.rounds[1];
+      const nextRound = session?.rounds[1];
+      if (!player || !session || !nextRound) return false;
       const assigned = [...nextRound.sitOutIds, ...nextRound.courts.flatMap((court) => [...court.teamA, ...court.teamB])];
-      return Boolean(player && session.playerIds.includes(player.id) && assigned.includes(player.id));
+      return session.playerIds.includes(player.id) && assigned.includes(player.id);
     }, DB_KEY)).toBe(true);
     expect(errors).toEqual([]);
   });

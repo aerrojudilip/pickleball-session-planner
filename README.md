@@ -13,8 +13,38 @@ A static, offline-first web app for managing a pickleball roster, booking court 
 - Score validation, skipped games, per-court timers, and full-screen display mode
 - All-time and per-session statistics, chemistry, head-to-head records, and repeat heatmaps
 - Full session history, print layouts, and JSON/CSV/text exports
-- Local JSON persistence, optional GitHub repository backup, and schema-checked imports
+- Supabase multi-device persistence, local offline cache, optional GitHub backup, and schema-checked imports
 - Installable PWA with an offline app shell and light/dark themes
+- Session-scoped administrator access for roster, booking, play, display, and settings controls
+
+## Administrator Access
+
+Roster management, court bookings, active sessions, display controls, undo/redo, settings, backups, and data reset require an administrator sign-in. Statistics remain available as a public, read-only view. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header.
+
+Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
+
+## Configure The Free Database
+
+1. Create a free project at [supabase.com](https://supabase.com). Enter the generated database password directly in Supabase and keep it outside this repository.
+2. Open **SQL Editor** in the project, paste [supabase/schema.sql](supabase/schema.sql), and run it once. This creates the single JSONB document table, version checks, grants, and RLS policies.
+3. Open **Authentication > Users**, select **Add user**, and create `admin@pickleball-planner.app`. Set it to the administrator password agreed for this deployment and mark the email confirmed. Passwords belong only in Supabase Auth, never in source control.
+4. Open **Project Settings > API** and copy the **Project URL** and **Publishable key**. A legacy `anon` key also works. Do not copy the `service_role` key.
+5. Put only those public values into [js/config.js](js/config.js):
+
+```js
+const deployedConfig = {
+  url: "https://YOUR-PROJECT-REF.supabase.co",
+  anonKey: "YOUR-PUBLISHABLE-KEY",
+  adminEmail: "admin@pickleball-planner.app",
+  stateId: "primary",
+};
+
+export const SUPABASE_CONFIG = Object.freeze(deployedConfig);
+```
+
+6. Commit and deploy the configuration. Open the app, sign in as `admin`, and select **More > Cloud database > Sync now**. If the table is empty, the first administrator sign-in also uploads the current browser database automatically.
+
+The supplied read policy is public so the read-only statistics view can load on any device without a login. Because the app stores one complete JSON document, roster names, notes, bookings, sessions, and scores are consequently readable through the public API. Do not put confidential information in this deployment. For private data, remove `anon` from the select grant and policy in [supabase/schema.sql](supabase/schema.sql); public statistics will then require authentication too.
 
 ## Run Locally
 
@@ -70,13 +100,19 @@ All application URLs are relative, and `.nojekyll` is included, so no build step
 
 ## Storage And Backups
 
-### Tier 1: Browser Storage
+### Primary: Supabase
 
-The complete database is stored as JSON in `localStorage` under `pickleball.db.v1`. Changes are saved after every mutation with a short debounce and flushed when the page is hidden. Browser storage belongs to one browser profile on one device; clearing site data removes it.
+When configured, Supabase is the shared source of truth. Startup loads the remote JSONB document before the browser cache unless that cache contains pending offline changes. A markerless cache from an older release is treated as pending during the first cloud-enabled startup, so migration cannot silently replace it. Cloud writes are debounced, serialized, and sent with the administrator's Auth token. A monotonically increasing version prevents a stale device from silently overwriting a newer document. After a conflict, export the browser copy if it is needed, or choose **Reload cloud data** and explicitly confirm that its pending changes may be discarded.
+
+The free tier is sufficient for this app's single-document workload. Auth credentials and tokens are not part of the application database or JSON exports.
+
+### Offline Cache: Browser Storage
+
+The complete database is also cached as JSON in `localStorage` under `pickleball.db.v1`. Every mutation atomically stores the document with its internal cloud version and pending marker; failed writes are retried when the page is hidden. If Supabase cannot be reached, startup uses this cache and failed cloud writes remain safe locally. Internal sync metadata is omitted from exports. Browser storage belongs to one browser profile on one device; clearing site data removes the cache.
 
 Use **More > Data backup > Export all data** regularly. Imports support merge or replace and reject unsupported schema versions. GitHub credentials are kept under a separate key and are never included in data exports.
 
-### Tier 2: GitHub Repository Backup
+### Optional: GitHub Repository Backup
 
 GitHub backup is optional. The rest of the app remains fully functional when it is disabled.
 
@@ -101,19 +137,9 @@ Existing files are updated with their current SHA. A `409 Conflict` causes one S
 
 The token is stored only in this browser's `localStorage`; it is never placed in the repository, an export, or a request URL. It is still readable by anyone who can access this browser profile or run code on the app's origin. Prefer a private data repository, use the shortest practical expiry, revoke lost tokens promptly, and avoid this option on shared devices. Data synced to a public repository is public.
 
-### Tier 3: Future Multi-Device Options
-
-These options are intentionally not implemented in this static release:
-
-- GitHub Gist API
-- Cloudflare Workers with KV
-- Supabase free tier
-
-Any future sync layer should add authentication, conflict semantics, and migration handling without weakening local-only operation.
-
 ## PWA And Offline Use
 
-Visit the deployed app once while online so the service worker can cache the app shell. Supported browsers can then install it from their normal **Install app** or **Add to Home Screen** action. Offline mode covers the application itself and local data; GitHub backup still requires a network connection.
+Visit the deployed app once while online so the service worker can cache the app shell. Supported browsers can then install it from their normal **Install app** or **Add to Home Screen** action. Offline mode covers the application itself and cached data; Supabase synchronization and GitHub backup require a network connection.
 
 When a new service worker finishes installing, the app shows **A new version is ready**. Select **Update** to activate it and reload. If a browser has retained a much older development worker, clear this site's storage/service worker once and reload online.
 

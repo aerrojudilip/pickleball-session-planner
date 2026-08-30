@@ -1,5 +1,30 @@
 export const DB_KEY = "pickleball.db.v1";
 export const CREDENTIALS_KEY = "pickleball.github.credentials.v1";
+export const ADMIN_SESSION_KEY = "pickleball.admin.session.v1";
+export const SUPABASE_SYNC_KEY = "pickleball.supabase.sync.v1";
+export const CLOUD_SYNC_FIELD = "_cloudSync";
+
+export async function isolateCloud(page) {
+  await page.route("https://ejxxfkrmboawioqwrezg.supabase.co/**", () => {
+    throw new Error("An E2E test attempted to contact the production Supabase project.");
+  });
+  await page.addInitScript(() => {
+    if (!("__PICKLEBALL_SUPABASE_CONFIG__" in globalThis)) {
+      globalThis.__PICKLEBALL_SUPABASE_CONFIG__ = { url: "", anonKey: "", adminEmail: "", stateId: "primary" };
+    }
+  });
+}
+
+export async function configureCloud(page) {
+  await page.addInitScript(() => {
+    globalThis.__PICKLEBALL_SUPABASE_CONFIG__ = {
+      url: "https://fixture.supabase.co",
+      anonKey: "public-key",
+      adminEmail: "admin@pickleball-planner.app",
+      stateId: "primary",
+    };
+  });
+}
 
 export function localDateString(date = new Date()) {
   const year = date.getFullYear();
@@ -89,15 +114,18 @@ export function createTestDatabase({ withSession = false, withBooking = false } 
   return database;
 }
 
-export async function seedDatabase(page, database) {
+export async function seedDatabase(page, database, { authenticated = true, syncState = null } = {}) {
   await page.addInitScript(
-    ({ dbKey, value }) => {
+    ({ dbKey, authKey, syncKey, syncField, authenticated: shouldAuthenticate, sync, value }) => {
       if (sessionStorage.getItem("pickleball.e2e.seeded") !== "1") {
-        localStorage.setItem(dbKey, JSON.stringify(value));
+        localStorage.setItem(dbKey, JSON.stringify(sync ? { ...value, [syncField]: sync } : value));
+        localStorage.removeItem(syncKey);
+        if (shouldAuthenticate) sessionStorage.setItem(authKey, "authenticated");
+        else sessionStorage.removeItem(authKey);
         sessionStorage.setItem("pickleball.e2e.seeded", "1");
       }
     },
-    { dbKey: DB_KEY, value: database },
+    { dbKey: DB_KEY, authKey: ADMIN_SESSION_KEY, syncKey: SUPABASE_SYNC_KEY, syncField: CLOUD_SYNC_FIELD, authenticated, sync: syncState, value: database },
   );
 }
 

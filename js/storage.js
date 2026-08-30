@@ -1,19 +1,20 @@
 // storage.js — Tier 1 persistence: the full JSON document in localStorage.
 //
-// Writes are debounced on mutation and flushed on page hide. Corrupt JSON is
-// preserved (never silently overwritten) so the user can choose to reset or
-// import. Quota/write failures are surfaced via a callback.
+// Each mutation atomically stores the document and cloud-sync metadata.
+// Corrupt JSON is preserved (never silently overwritten) so the user can
+// choose to reset or import. Failed writes remain pending for a later flush.
 //
 // This module touches localStorage only; it has no other DOM dependencies.
 
 import { DB_STORAGE_KEY, normalizeDatabase } from "./schema.js";
 
-const DEBOUNCE_MS = 400;
+export const CLOUD_SYNC_FIELD = "_cloudSync";
 
 /**
  * @typedef {Object} LoadResult
  * @property {object|null} db - normalized database, or null if none stored
  * @property {boolean} corrupt - true if stored data existed but failed to parse
+ * @property {object} [syncState] - cloud state atomically stored with the database
  * @property {string} [raw] - the raw corrupt string, if any
  */
 
@@ -31,39 +32,44 @@ export function loadDatabase() {
   if (raw == null) return { db: null, corrupt: false };
   try {
     const parsed = JSON.parse(raw);
-    return { db: normalizeDatabase(parsed), corrupt: false };
+    const result = { db: normalizeDatabase(parsed), corrupt: false };
+    if (parsed && typeof parsed[CLOUD_SYNC_FIELD] === "object") {
+      result.syncState = parsed[CLOUD_SYNC_FIELD];
+    }
+    return result;
   } catch {
     return { db: null, corrupt: true, raw };
   }
 }
 
 /**
- * Create a debounced saver bound to a store.
+ * Create an atomic local saver bound to a store.
  * @param {object} store - the app store (from createStore)
  * @param {(err: Error) => void} [onError]
  */
-export function createPersister(store, onError) {
-  let timer = null;
+export function createPersister(store, onError, options = {}) {
   let pending = false;
+  const onMutation = typeof options.onMutation === "function" ? options.onMutation : null;
+  const getSyncState = typeof options.getSyncState === "function" ? options.getSyncState : null;
 
   function writeNow() {
-    pending = false;
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
     try {
       const db = store.getDb();
-      localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(db));
+      const syncState = getSyncState ? getSyncState() : null;
+      localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(cacheDocument(db, syncState)));
+      pending = false;
+      return true;
     } catch (err) {
+      pending = true;
       if (onError) onError(err);
+      return false;
     }
   }
 
   function schedule() {
     pending = true;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(writeNow, DEBOUNCE_MS);
+    if (onMutation) onMutation();
+    writeNow();
   }
 
   function flush() {
@@ -81,11 +87,17 @@ export function createPersister(store, onError) {
 }
 
 /** Overwrite storage with a specific database object immediately. */
-export function overwriteDatabase(db) {
-  localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(normalizeDatabase(db)));
+export function overwriteDatabase(db, syncState = null) {
+  localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(cacheDocument(db, syncState)));
 }
 
 /** Remove the stored database entirely. */
 export function clearDatabase() {
   localStorage.removeItem(DB_STORAGE_KEY);
+}
+
+function cacheDocument(db, syncState) {
+  const document = normalizeDatabase(db);
+  if (!syncState || !syncState.projectUrl) return document;
+  return { ...document, [CLOUD_SYNC_FIELD]: { ...syncState } };
 }

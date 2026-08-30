@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createGitHubClient, databaseFiles, GitHubApiError, hashContent, utf8ToBase64 } from "../../js/github.js";
 import { createEmptyDatabase, DB_STORAGE_KEY } from "../../js/schema.js";
 import { createStore } from "../../js/state.js";
-import { clearDatabase, createPersister, loadDatabase, overwriteDatabase } from "../../js/storage.js";
+import { CLOUD_SYNC_FIELD, clearDatabase, createPersister, loadDatabase, overwriteDatabase } from "../../js/storage.js";
 
 function jsonResponse(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -243,6 +243,89 @@ test("the persister ignores UI-only updates and flushes durable mutations", () =
     store.commit("dark theme", (draft) => { draft.settings.theme = "dark"; });
     persister.flush();
     assert.equal(JSON.parse(storage.getItem(DB_STORAGE_KEY)).settings.theme, "dark");
+    persister.unsubscribe();
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("the persister atomically stores a mutation with pending cloud metadata", () => {
+  const originalStorage = globalThis.localStorage;
+  const storage = memoryStorage();
+  globalThis.localStorage = storage;
+  try {
+    const store = createStore(createEmptyDatabase());
+    const syncState = {
+      projectUrl: "https://fixture.supabase.co",
+      stateId: "primary",
+      pending: false,
+      version: 4,
+      updatedAt: null,
+    };
+    const persister = createPersister(store, null, {
+      onMutation: () => { syncState.pending = true; },
+      getSyncState: () => syncState,
+    });
+
+    store.commit("dark theme", (draft) => { draft.settings.theme = "dark"; });
+    const cached = JSON.parse(storage.getItem(DB_STORAGE_KEY));
+    assert.equal(cached.settings.theme, "dark");
+    assert.equal(cached[CLOUD_SYNC_FIELD].pending, true);
+    assert.equal(cached[CLOUD_SYNC_FIELD].version, 4);
+    persister.unsubscribe();
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("a failed local write remains pending and flush retries it", () => {
+  const originalStorage = globalThis.localStorage;
+  const values = new Map();
+  let failWrite = true;
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => {
+      if (failWrite) throw new DOMException("Storage full", "QuotaExceededError");
+      values.set(key, String(value));
+    },
+    removeItem: (key) => values.delete(key),
+  };
+  try {
+    const errors = [];
+    const store = createStore(createEmptyDatabase());
+    const persister = createPersister(store, (error) => errors.push(error));
+    store.commit("dark theme", (draft) => { draft.settings.theme = "dark"; });
+    assert.equal(values.has(DB_STORAGE_KEY), false);
+    assert.equal(errors.length, 1);
+
+    failWrite = false;
+    persister.flush();
+    assert.equal(JSON.parse(values.get(DB_STORAGE_KEY)).settings.theme, "dark");
+    persister.unsubscribe();
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("the persister retries a local write after storage recovers", () => {
+  const originalStorage = globalThis.localStorage;
+  const storage = memoryStorage();
+  const setItem = storage.setItem;
+  let attempts = 0;
+  storage.setItem = (key, value) => {
+    attempts += 1;
+    if (attempts === 1) throw new DOMException("Storage is full", "QuotaExceededError");
+    setItem(key, value);
+  };
+  globalThis.localStorage = storage;
+  try {
+    const store = createStore(createEmptyDatabase());
+    const persister = createPersister(store);
+    store.commit("dark theme", (draft) => { draft.settings.theme = "dark"; });
+    assert.equal(storage.getItem(DB_STORAGE_KEY), null);
+    persister.flush();
+    assert.equal(JSON.parse(storage.getItem(DB_STORAGE_KEY)).settings.theme, "dark");
+    assert.equal(attempts, 2);
     persister.unsubscribe();
   } finally {
     globalThis.localStorage = originalStorage;

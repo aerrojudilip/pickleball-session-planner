@@ -95,10 +95,12 @@ export function renderMore(container, ctx) {
       ),
     ),
 
+    cloudDatabaseSection(ctx),
+
     // ---- Data backup ----
     section(
       "Data backup",
-      el("p", { class: "muted small" }, "Your data lives only in this browser. Export a backup file you can re-import on any device."),
+      el("p", { class: "muted small" }, "Download a portable copy of the complete database for recovery or transfer."),
       el(
         "div",
         { class: "btn-row" },
@@ -112,7 +114,9 @@ export function renderMore(container, ctx) {
     // ---- Danger ----
     section(
       "Reset",
-      el("p", { class: "muted small" }, "Remove all sessions, players, and bookings from this browser."),
+      el("p", { class: "muted small" }, ctx.cloud && ctx.cloud.isConfigured()
+        ? "Remove all sessions, players, and bookings from the shared database and this browser cache."
+        : "Remove all sessions, players, and bookings from this browser."),
       el(
         "div",
         { class: "btn-row" },
@@ -121,8 +125,98 @@ export function renderMore(container, ctx) {
       ),
     ),
 
-    el("p", { class: "muted small", style: { marginTop: "16px", textAlign: "center" } }, "Pickleball Session Planner \u00b7 offline-first \u00b7 no account needed"),
+    el("p", { class: "muted small", style: { marginTop: "16px", textAlign: "center" } }, "Pickleball Session Planner \u00b7 offline-first \u00b7 administrator access enabled"),
   );
+}
+
+function cloudDatabaseSection(ctx) {
+  if (!ctx.cloud || !ctx.cloud.isConfigured()) {
+    return section(
+      "Cloud database",
+      el("p", { class: "muted small" }, "Cloud storage is not configured for this deployment. Browser storage remains active."),
+    );
+  }
+
+  const status = el("p", {
+    class: "github-sync-status muted small",
+    role: "status",
+    "aria-live": "polite",
+  }, cloudStatusText(ctx.cloud.getStatus()));
+  const syncBtn = el("button", { class: "btn btn--primary", type: "button" }, "Sync now");
+  const reloadBtn = el("button", { class: "btn", type: "button" }, "Reload cloud data");
+  let unsubscribeStatus = null;
+  if (typeof ctx.cloud.subscribe === "function") {
+    unsubscribeStatus = ctx.cloud.subscribe((next) => {
+      if (!status.isConnected) {
+        unsubscribeStatus();
+        return;
+      }
+      status.textContent = cloudStatusText(next);
+    });
+  }
+
+  syncBtn.addEventListener("click", async () => {
+    syncBtn.disabled = true;
+    reloadBtn.disabled = true;
+    status.textContent = "Saving to the cloud...";
+    try {
+      await ctx.cloud.syncNow();
+      status.textContent = cloudStatusText(ctx.cloud.getStatus());
+      ctx.showToast("Cloud database is current.");
+    } catch (error) {
+      status.textContent = error.message || "Cloud save failed.";
+    } finally {
+      syncBtn.disabled = false;
+      reloadBtn.disabled = false;
+    }
+  });
+  reloadBtn.addEventListener("click", async () => {
+    syncBtn.disabled = true;
+    reloadBtn.disabled = true;
+    try {
+      await ctx.cloud.reload();
+    } catch (error) {
+      status.textContent = error.message || "Could not reload cloud data.";
+    } finally {
+      syncBtn.disabled = false;
+      reloadBtn.disabled = false;
+    }
+  });
+
+  return section(
+    "Cloud database",
+    el("p", { class: "muted small" }, "Supabase is the shared primary store. This browser keeps an offline cache and queues each administrator change for cloud storage."),
+    status,
+    el("div", { class: "btn-row" }, syncBtn, reloadBtn),
+  );
+}
+
+function cloudStatusText(status) {
+  switch (status.state) {
+    case "empty":
+      return "Connected. The first administrator sign-in will upload this browser's data.";
+    case "pending":
+      return "A cloud save is pending.";
+    case "syncing":
+      return "Saving to the cloud...";
+    case "synced": {
+      const when = status.updatedAt ? ` Last saved ${formatSyncTime(status.updatedAt)}.` : "";
+      const version = status.version ? ` Version ${status.version}.` : "";
+      return `Cloud database is current.${when}${version}`;
+    }
+    case "requires-auth":
+      return "Administrator sign-in is required before pending changes can sync.";
+    case "conflict":
+      return "Cloud data changed on another device. Export this browser's data or use Reload cloud data to discard its pending changes.";
+    case "cache-error":
+      return "Browser data is unreadable. Import a backup, clear all data, or reload cloud data before syncing.";
+    case "error":
+      return status.error && status.error.message
+        ? `Cloud save needs attention: ${status.error.message}`
+        : "Cloud storage is temporarily unavailable; the browser cache is still current.";
+    default:
+      return "Cloud storage is ready.";
+  }
 }
 
 function githubBackupSection(ctx, db) {
@@ -462,12 +556,14 @@ function previewImport(container, ctx, text) {
     });
     mergeBtn.addEventListener("click", () => {
       dialog.close();
+      if (ctx.cloud && ctx.cloud.resolveCache) ctx.cloud.resolveCache();
       ctx.store.replaceDatabase("Merge import", mergeDatabase(ctx.store.getDb(), db));
       ctx.showToast("Backup merged.", { actionLabel: "Undo", onAction: () => { ctx.store.undo(); ctx.refresh(); } });
       ctx.refresh();
     });
     replaceBtn.addEventListener("click", () => {
       dialog.close();
+      if (ctx.cloud && ctx.cloud.resolveCache) ctx.cloud.resolveCache();
       ctx.store.replaceDatabase("Replace with import", replaceWith(db));
       ctx.showToast("Data replaced.", { actionLabel: "Undo", onAction: () => { ctx.store.undo(); ctx.refresh(); } });
       ctx.refresh();
@@ -489,6 +585,7 @@ function previewImport(container, ctx, text) {
   });
   importBtn.addEventListener("click", () => {
     dialog.close();
+    if (ctx.cloud && ctx.cloud.resolveCache) ctx.cloud.resolveCache();
     ctx.store.replaceDatabase("Import session", mergeSession(ctx.store.getDb(), result.session, result.players));
     ctx.showToast("Session imported.", { actionLabel: "Undo", onAction: () => { ctx.store.undo(); ctx.refresh(); } });
     ctx.refresh();
@@ -496,13 +593,17 @@ function previewImport(container, ctx, text) {
 }
 
 async function confirmReset(container, ctx) {
+  const cloudBacked = ctx.cloud && ctx.cloud.isConfigured();
   const ok = await ctx.confirmDialog({
     title: "Clear all data?",
-    message: "This removes every player, session, and booking from this browser.",
+    message: cloudBacked
+      ? "This removes every player, session, and booking from the shared database and this browser cache."
+      : "This removes every player, session, and booking from this browser.",
     confirmLabel: "Clear everything",
     tone: "danger",
   });
   if (!ok) return;
+  if (ctx.cloud && ctx.cloud.resolveCache) ctx.cloud.resolveCache();
   ctx.store.replaceDatabase("Clear all data", createEmptyDatabase());
   ctx.store.setUi({ currentSessionId: null });
   ctx.showToast("All data cleared.", { actionLabel: "Undo", onAction: () => { ctx.store.undo(); ctx.refresh(); } });
@@ -516,6 +617,7 @@ function restoreSamples(container, ctx) {
     return;
   }
   bootstrapSamples().then((next) => {
+    if (ctx.cloud && ctx.cloud.resolveCache) ctx.cloud.resolveCache();
     ctx.store.replaceDatabase("Load samples", next);
     ctx.showToast("Sample players loaded.");
     ctx.refresh();

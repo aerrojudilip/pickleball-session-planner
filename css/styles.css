@@ -316,6 +316,45 @@ a {
   padding: 40px 16px;
 }
 
+/* ---------- Administrator sign-in ---------- */
+.admin-login {
+  min-height: min(620px, calc(100dvh - var(--header-h) - var(--nav-h) - 32px));
+  display: grid;
+  place-items: center;
+  padding: 20px 0;
+}
+.admin-login__card {
+  width: min(100%, 420px);
+  padding: 24px;
+}
+.admin-login__eyebrow {
+  margin: 0 0 8px;
+  color: var(--court-green);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.admin-login__intro {
+  margin: 0 0 20px;
+}
+.admin-login__message {
+  min-height: 1.45em;
+  margin: 0 0 10px;
+  color: var(--coral-dark);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.admin-login__card .btn + .btn {
+  margin-top: 8px;
+}
+
+@media (max-width: 420px) {
+  .app__title-long {
+    display: none;
+  }
+}
+
 /* ---------- Buttons ---------- */
 .btn {
   min-height: var(--tap);

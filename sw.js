@@ -6,12 +6,12 @@
 //   * Same-origin navigations: network-first, falling back to the cached
 //     shell so the app opens offline.
 //   * Same-origin assets (JS/CSS/icons): stale-while-revalidate.
-//   * api.github.com and any other cross-origin request: never cached — always
-//     go to the network so backup tokens and fresh data are never stored here.
+//   * Supabase, api.github.com, and any other cross-origin request: never
+//     cached, so tokens and fresh remote data are never stored here.
 //
 // All paths are repository-relative so this works under a GitHub Pages subpath.
 
-const CACHE = "pickleball-v3";
+const CACHE = "pickleball-v6";
 
 const APP_SHELL = [
   "./",
@@ -19,6 +19,9 @@ const APP_SHELL = [
   "./manifest.webmanifest",
   "./css/styles.css",
   "./js/app.js",
+  "./js/auth.js",
+  "./js/config.js",
+  "./js/supabase.js",
   "./js/schema.js",
   "./js/state.js",
   "./js/storage.js",
@@ -32,6 +35,7 @@ const APP_SHELL = [
   "./js/github.js",
   "./js/ui/dom.js",
   "./js/ui/feedback.js",
+  "./js/ui/login.js",
   "./js/ui/roster.js",
   "./js/ui/session.js",
   "./js/ui/schedule.js",
