@@ -428,7 +428,8 @@ function registerServiceWorker() {
   if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
     return;
   }
-  window.addEventListener("load", async () => {
+
+  async function register() {
     let reloadForUpdate = false;
     let offeredWorker = null;
 
@@ -464,7 +465,10 @@ function registerServiceWorker() {
     } catch {
       /* Offline support is progressive; the app remains usable without it. */
     }
-  });
+  }
+
+  if (document.readyState === "complete") void register();
+  else window.addEventListener("load", register, { once: true });
 }
 
 boot();
