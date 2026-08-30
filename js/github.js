@@ -162,7 +162,7 @@ export function databaseFiles(db) {
     {
       path: "data/players.json",
       content: `${JSON.stringify({ schemaVersion, players }, null, 2)}\n`,
-      message: "Backup pickleball roster",
+      message: "Backup pickleball players",
     },
   ];
 

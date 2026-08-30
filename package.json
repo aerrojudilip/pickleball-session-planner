@@ -1,7 +1,7 @@
 {
   "name": "pickleball-session-planner",
   "version": "1.0.0",
-  "description": "Static, offline-first Pickleball Session Planner with Supabase sync. Rosters, fair scheduling, scores, statistics, court bookings, and JSON backup on GitHub Pages.",
+  "description": "Static, offline-first Pickleball Session Planner with Supabase sync. Players, fair scheduling, scores, statistics, court bookings, and JSON backup on GitHub Pages.",
   "type": "module",
   "private": true,
   "scripts": {

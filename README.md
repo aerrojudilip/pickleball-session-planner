@@ -1,10 +1,10 @@
 # Pickleball Session Planner
 
-A static, offline-first web app for managing a pickleball roster, booking court time, generating fair rotations, entering scores, and reviewing session statistics. It uses plain HTML, CSS, and JavaScript modules and can be hosted directly from a GitHub Pages repository.
+A static, offline-first web app for managing pickleball players, booking court time, generating fair rotations, entering scores, and reviewing session statistics. It uses plain HTML, CSS, and JavaScript modules and can be hosted directly from a GitHub Pages repository.
 
 ## Features
 
-- Persistent player roster with ratings, notes, active status, and sample data
+- Persistent players with ratings, notes, active status, and sample data
 - Day/week court-booking calendar linked to play sessions
 - Seeded, constrained round generation for 1-12 courts
 - Random, balanced, king-of-the-court, and fixed-partner modes
@@ -19,7 +19,7 @@ A static, offline-first web app for managing a pickleball roster, booking court 
 
 ## Administrator Access
 
-Roster, Schedule, Play, and Stats open without a login. Only the More tab requires administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. Changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase still rejects anonymous cloud writes.
+Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player changes require authentication: choosing Add, Edit, Active/Inactive, Delete, or Clear samples while signed out opens More and resumes the action after sign-in. Other changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase rejects anonymous cloud writes.
 
 Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
 
@@ -44,7 +44,7 @@ export const SUPABASE_CONFIG = Object.freeze(deployedConfig);
 
 6. Commit and deploy the configuration. Open the app, sign in as `admin`, and select **More > Cloud database > Sync now**. If the table is empty, the first administrator sign-in also uploads the current browser database automatically.
 
-The supplied read policy is public so the read-only statistics view can load on any device without a login. Because the app stores one complete JSON document, roster names, notes, bookings, sessions, and scores are consequently readable through the public API. Do not put confidential information in this deployment. For private data, remove `anon` from the select grant and policy in [supabase/schema.sql](supabase/schema.sql); public statistics will then require authentication too.
+The supplied read policy is public so players and read-only statistics can load on any device without a login. Because the app stores one complete JSON document, player names, notes, bookings, sessions, and scores are consequently readable through the public API. Do not put confidential information in this deployment. For private data, remove `anon` from the select grant and policy in [supabase/schema.sql](supabase/schema.sql); public data will then require authentication too.
 
 ## Run Locally
 
@@ -149,4 +149,6 @@ Service workers require HTTPS, except that browsers also allow them on `localhos
 
 All durable application data is JSON with `schemaVersion: 1`. Player IDs, rather than names, are used as references in sessions, bookings, rounds, scores, and pair constraints, so players can be renamed without damaging history.
 
-The default first run loads 12 clearly marked sample players. **Roster > Clear samples** removes them in one undoable action.
+Players are stored in the Supabase `public.app_state` row under `document.players`. Each authenticated cloud save writes the complete versioned document, so player additions, edits, active status, ratings, and notes are available in new browsers and on other devices.
+
+The default first run loads 12 clearly marked sample players. **Players > Clear samples** removes them in one undoable action.

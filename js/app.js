@@ -125,6 +125,7 @@ async function boot() {
         : { state: "empty" }
     : { state: "not-configured" };
   const cloudStatusListeners = new Set();
+  let pendingAdminAction = null;
 
   if (cloudLoadError) {
     const message = cloudLoadError instanceof SupabaseConflictError
@@ -262,6 +263,11 @@ async function boot() {
         renderAdminLogin(main, ctx, { activity: ADMIN_ROUTES.get(route) });
       } else {
         ROUTES[route](main, ctx);
+        if (pendingAdminAction && auth.isAuthenticated() && pendingAdminAction.route === route) {
+          const { action } = pendingAdminAction;
+          pendingAdminAction = null;
+          queueMicrotask(action);
+        }
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -278,6 +284,7 @@ async function boot() {
       action();
       return true;
     }
+    pendingAdminAction = { route: currentRoute(), action };
     showToast(`Sign in from More to access ${activity}.`);
     navigate("more");
     return false;
@@ -291,6 +298,7 @@ async function boot() {
         // The persister already surfaced the error and kept the local copy dirty.
       }
     }
+    if (pendingAdminAction) navigate(pendingAdminAction.route);
   }
 
   async function reloadCloudData() {

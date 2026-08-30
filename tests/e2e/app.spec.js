@@ -22,11 +22,11 @@ test.describe("core browser journeys", () => {
     const errors = collectBrowserErrors(page);
 
     await page.goto("/#roster");
-    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
     await page.getByRole("button", { name: "Display mode" }).click();
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
     await expect(page).toHaveURL(/#more$/);
-    await page.getByRole("button", { name: "Roster" }).click();
+    await page.getByRole("button", { name: "Players", exact: true }).click();
     await page.getByRole("button", { name: "Schedule" }).click();
     await expect(page.getByRole("heading", { name: "Schedule" })).toBeVisible();
     await page.getByRole("button", { name: "Play", exact: true }).click();
@@ -49,8 +49,8 @@ test.describe("core browser journeys", () => {
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
     expect(await page.evaluate((key) => sessionStorage.getItem(key), ADMIN_SESSION_KEY)).toBeNull();
 
-    await page.getByRole("button", { name: "Roster" }).click();
-    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await page.getByRole("button", { name: "Players", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
     await page.getByRole("button", { name: "Administrator sign in" }).click();
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
     await expect(page).toHaveURL(/#more$/);
@@ -60,7 +60,7 @@ test.describe("core browser journeys", () => {
   test("configured Supabase loads first and receives authenticated versioned writes", async ({ page }) => {
     const localDatabase = createTestDatabase();
     localDatabase.players[0].name = "Local Only";
-    const cloudDatabase = createTestDatabase();
+    let cloudDatabase = createTestDatabase();
     cloudDatabase.players[0].name = "Cloud Source";
     let authRequest = null;
     const patchRequests = [];
@@ -108,7 +108,9 @@ test.describe("core browser journeys", () => {
         return;
       }
       if (request.method() === "PATCH") {
-        patchRequests.push({ url: request.url(), body: request.postDataJSON(), headers: request.headers() });
+        const body = request.postDataJSON();
+        patchRequests.push({ url: request.url(), body, headers: request.headers() });
+        cloudDatabase = body.document;
         cloudVersion += 1;
         await route.fulfill({
           status: 200,
@@ -124,16 +126,19 @@ test.describe("core browser journeys", () => {
 
     await page.goto("/#roster");
     await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Source");
-    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
+    await page.getByRole("button", { name: /Add player/ }).click();
+    await expect(page).toHaveURL(/#more$/);
+    await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
     await page.getByLabel("Password").fill("browser-secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await page.getByRole("button", { name: "Roster" }).click();
+    await expect(page).toHaveURL(/#roster$/);
+    await expect(page.getByRole("dialog", { name: "Add player" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit Cloud Source" })).toBeVisible();
     expect(authRequest.body).toEqual({ email: "admin@pickleball-planner.app", password: "browser-secret" });
     expect(authRequest.url).not.toContain("browser-secret");
     expect(authRequest.headers.apikey).toBe("public-key");
 
-    await page.getByRole("button", { name: /Add player/ }).click();
     const dialog = page.getByRole("dialog", { name: "Add player" });
     await dialog.locator("#pf-name").fill("Cloud Added");
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
@@ -149,6 +154,15 @@ test.describe("core browser journeys", () => {
     await page.getByRole("button", { name: "Dark", exact: true }).click();
     await expect.poll(() => patchRequests.length).toBe(2);
     await expect(cloudSection.getByRole("status")).toContainText("Version 5.");
+
+    await page.evaluate((databaseKey) => {
+      localStorage.removeItem(databaseKey);
+      sessionStorage.clear();
+      sessionStorage.setItem("pickleball.e2e.seeded", "1");
+    }, DB_KEY);
+    await page.goto("/#roster");
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit Cloud Added" })).toBeVisible();
     expect(errors).toEqual([]);
   });
 
@@ -226,7 +240,7 @@ test.describe("core browser journeys", () => {
     await cloudSection.getByRole("button", { name: "Reload cloud data" }).click();
     const confirm = page.getByRole("dialog", { name: "Use cloud data?" });
     await confirm.getByRole("button", { name: "Use cloud data" }).click();
-    await page.getByRole("button", { name: "Roster" }).click();
+    await page.getByRole("button", { name: "Players", exact: true }).click();
     await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
     await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Current");
   });
@@ -287,13 +301,13 @@ test.describe("core browser journeys", () => {
     expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
   });
 
-  test("375px roster stays usable and a new player persists after reload", async ({ page }) => {
+  test("375px Players stays usable and a new player persists after reload", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await seedDatabase(page, createTestDatabase());
     const errors = collectBrowserErrors(page);
 
     await page.goto("/#roster");
-    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Display mode" })).toBeVisible();
 

@@ -1,4 +1,4 @@
-// ui/roster.js — player roster management.
+// ui/roster.js — player management.
 
 import { el, mount, avatar } from "./dom.js";
 import { showToast, confirmDialog, openDialog } from "./feedback.js";
@@ -24,7 +24,7 @@ export function renderRoster(container, ctx) {
       el(
         "div",
         {},
-        el("h1", { class: "page-title" }, "Roster"),
+        el("h1", { class: "page-title" }, "Players"),
         el("p", { class: "muted small" }, `${db.players.length} players \u00b7 ${activeCount} active`),
       ),
       el("button", { class: "btn btn--primary", type: "button", onClick: () => openPlayerForm(ctx) }, "+ Add player"),
@@ -108,10 +108,14 @@ function playerRow(player, ctx) {
         "aria-pressed": String(player.active),
         title: player.active ? "Active — tap to bench" : "Inactive — tap to activate",
         onClick: () => {
-          store.commit(player.active ? `Bench ${player.name}` : `Activate ${player.name}`, (draft) => {
-            const p = draft.players.find((x) => x.id === player.id);
-            if (p) p.active = !p.active;
-          });
+          const changeStatus = () => {
+            store.commit(player.active ? `Bench ${player.name}` : `Activate ${player.name}`, (draft) => {
+              const p = draft.players.find((x) => x.id === player.id);
+              if (p) p.active = !p.active;
+            });
+          };
+          if (ctx.cloud.isConfigured()) ctx.requireAdmin("player management", changeStatus);
+          else changeStatus();
         },
       },
       player.active ? "Active" : "Inactive",
@@ -129,6 +133,11 @@ function playerRow(player, ctx) {
  * Returns a promise resolving to the created/edited player id (or null).
  */
 export function openPlayerForm(ctx, player = null) {
+  if (ctx.cloud.isConfigured() && !ctx.auth.isAuthenticated()) {
+    ctx.requireAdmin("player management", () => openPlayerForm(ctx, player));
+    return Promise.resolve(null);
+  }
+
   const { store } = ctx;
   const isEdit = Boolean(player);
 
@@ -244,6 +253,11 @@ export function openPlayerForm(ctx, player = null) {
 }
 
 function clearSamples(ctx) {
+  if (ctx.cloud.isConfigured() && !ctx.auth.isAuthenticated()) {
+    ctx.requireAdmin("player management", () => clearSamples(ctx));
+    return;
+  }
+
   const { store } = ctx;
   confirmDialog({
     title: "Clear sample players?",
