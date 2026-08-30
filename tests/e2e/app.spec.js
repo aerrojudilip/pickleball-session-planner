@@ -17,17 +17,25 @@ test.describe("core browser journeys", () => {
     await isolateCloud(page);
   });
 
-  test("administrator routes require sign-in and sign-out closes access", async ({ page }) => {
+  test("only More requires sign-in and sign-out leaves other tabs public", async ({ page }) => {
     await seedDatabase(page, createTestDatabase(), { authenticated: false });
     const errors = collectBrowserErrors(page);
 
     await page.goto("/#roster");
+    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await page.getByRole("button", { name: "Display mode" }).click();
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
-    await expect(page).toHaveURL(/#roster$/);
-
-    await page.getByRole("button", { name: "View statistics" }).click();
-    await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
+    await expect(page).toHaveURL(/#more$/);
     await page.getByRole("button", { name: "Roster" }).click();
+    await page.getByRole("button", { name: "Schedule" }).click();
+    await expect(page.getByRole("heading", { name: "Schedule" })).toBeVisible();
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Play" })).toBeVisible();
+    await page.getByRole("button", { name: "Stats" }).click();
+    await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
+    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
+    await expect(page).toHaveURL(/#more$/);
 
     await page.getByLabel("Password").fill("not-the-administrator-password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -36,10 +44,16 @@ test.describe("core browser journeys", () => {
 
     await page.evaluate((key) => sessionStorage.setItem(key, "authenticated"), ADMIN_SESSION_KEY);
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "More" })).toBeVisible();
     await page.getByRole("button", { name: "Sign out administrator" }).click();
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
     expect(await page.evaluate((key) => sessionStorage.getItem(key), ADMIN_SESSION_KEY)).toBeNull();
+
+    await page.getByRole("button", { name: "Roster" }).click();
+    await expect(page.getByRole("heading", { name: "Roster" })).toBeVisible();
+    await page.getByRole("button", { name: "Administrator sign in" }).click();
+    await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
+    await expect(page).toHaveURL(/#more$/);
     expect(errors).toEqual([]);
   });
 
@@ -110,8 +124,10 @@ test.describe("core browser journeys", () => {
 
     await page.goto("/#roster");
     await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Source");
+    await page.getByRole("button", { name: "More" }).click();
     await page.getByLabel("Password").fill("browser-secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Roster" }).click();
     await expect(page.getByRole("button", { name: "Edit Cloud Source" })).toBeVisible();
     expect(authRequest.body).toEqual({ email: "admin@pickleball-planner.app", password: "browser-secret" });
     expect(authRequest.url).not.toContain("browser-secret");
@@ -192,12 +208,12 @@ test.describe("core browser journeys", () => {
 
     await page.goto("/#roster");
     await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Local Pending");
+    await expect(page.getByRole("button", { name: "Edit Local Pending" })).toBeVisible();
+    await page.getByRole("button", { name: "More" }).click();
     await page.getByLabel("Password").fill("browser-secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Edit Local Pending" })).toBeVisible();
     expect(patchRequest).toBeNull();
 
-    await page.getByRole("button", { name: "More" }).click();
     const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
     await expect(cloudSection.getByRole("status")).toContainText("changed on another device");
     await cloudSection.getByRole("button", { name: "Sync now" }).click();
@@ -260,10 +276,9 @@ test.describe("core browser journeys", () => {
     expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
     expect(cloudRequests).toBe(0);
 
-    await page.getByRole("button", { name: "Roster" }).click();
+    await page.getByRole("button", { name: "More" }).click();
     await page.getByLabel("Password").fill("browser-secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await page.getByRole("button", { name: "More" }).click();
     const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
     await expect(cloudSection.getByRole("status")).toContainText("Browser data is unreadable");
     await cloudSection.getByRole("button", { name: "Sync now" }).click();

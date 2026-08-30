@@ -35,9 +35,6 @@ const ROUTES = {
 };
 
 const ADMIN_ROUTES = new Map([
-  ["roster", "roster management"],
-  ["schedule", "court booking management"],
-  ["session", "sessions, rounds, and scoring"],
   ["more", "settings, backups, and data management"],
 ]);
 
@@ -281,15 +278,8 @@ async function boot() {
       action();
       return true;
     }
-    renderAdminLogin(main, ctx, {
-      activity,
-      onAuthenticated: () => {
-        updateAuthControls();
-        refresh();
-        action();
-      },
-    });
-    main.focus({ preventScroll: true });
+    showToast(`Sign in from More to access ${activity}.`);
+    navigate("more");
     return false;
   }
 
@@ -363,7 +353,7 @@ async function boot() {
       return;
     }
     if (ADMIN_ROUTES.has(currentRoute())) refresh();
-    else navigate("roster");
+    else navigate("more");
   });
 
   store.subscribe((_state, meta) => {

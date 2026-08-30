@@ -22,14 +22,14 @@ test("service worker caches the full shell and reloads offline", async ({ contex
 
   const cacheState = await page.evaluate(async () => {
     const names = await caches.keys();
-    const cache = await caches.open("pickleball-v7");
+    const cache = await caches.open("pickleball-v8");
     const requests = await cache.keys();
     return {
       names,
       paths: requests.map((request) => new URL(request.url).pathname),
     };
   });
-  expect(cacheState.names).toContain("pickleball-v7");
+  expect(cacheState.names).toContain("pickleball-v8");
   expect(cacheState.paths.some((path) => path.endsWith("/index.html"))).toBe(true);
   expect(cacheState.paths.some((path) => path.endsWith("/assets/icons/icon-maskable.png"))).toBe(true);
 
@@ -70,7 +70,7 @@ test("service worker registers when cloud startup finishes after window load", a
   releaseCloud();
 
   await page.waitForFunction(async () => Boolean((await navigator.serviceWorker.ready).active));
-  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v7"))).toBe(true);
+  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v8"))).toBe(true);
 });
 
 test("a fresh worker removes obsolete app-shell caches on activation", async ({ page }) => {
@@ -87,5 +87,5 @@ test("a fresh worker removes obsolete app-shell caches on activation", async ({ 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(async () => Boolean((await navigator.serviceWorker.ready).active));
   await expect.poll(() => page.evaluate(async () => !(await caches.keys()).includes("pickleball-obsolete-test"))).toBe(true);
-  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v7"))).toBe(true);
+  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v8"))).toBe(true);
 });

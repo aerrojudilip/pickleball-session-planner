@@ -15,11 +15,11 @@ A static, offline-first web app for managing a pickleball roster, booking court 
 - Full session history, print layouts, and JSON/CSV/text exports
 - Supabase multi-device persistence, local offline cache, optional GitHub backup, and schema-checked imports
 - Installable PWA with an offline app shell and light/dark themes
-- Session-scoped administrator access for roster, booking, play, display, and settings controls
+- Session-scoped administrator access through the More tab for cloud sync and protected settings
 
 ## Administrator Access
 
-Roster management, court bookings, active sessions, display controls, undo/redo, settings, backups, and data reset require an administrator sign-in. Statistics remain available as a public, read-only view. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header.
+Roster, Schedule, Play, and Stats open without a login. Only the More tab requires administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. Changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase still rejects anonymous cloud writes.
 
 Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
 
