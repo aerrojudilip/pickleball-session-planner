@@ -57,7 +57,7 @@ test.describe("core browser journeys", () => {
     expect(errors).toEqual([]);
   });
 
-  test("configured Supabase loads first and receives authenticated versioned writes", async ({ page }) => {
+  test("configured Supabase shares authenticated players and sessions with fresh browsers", async ({ page }) => {
     const localDatabase = createTestDatabase();
     localDatabase.players[0].name = "Local Only";
     let cloudDatabase = createTestDatabase();
@@ -160,9 +160,62 @@ test.describe("core browser journeys", () => {
       sessionStorage.clear();
       sessionStorage.setItem("pickleball.e2e.seeded", "1");
     }, DB_KEY);
-    await page.goto("/#roster");
+    await page.goto("/?fresh=players#roster");
     await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit Cloud Added" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await page.getByRole("button", { name: /New session/ }).click();
+    await expect(page).toHaveURL(/#more$/);
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page).toHaveURL(/#session$/);
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
+    await page.getByPlaceholder("e.g. Saturday Open Play").fill("Cloud Session");
+    await page.getByRole("button", { name: /Generate 1 round/ }).click();
+    await expect.poll(() => patchRequests.length).toBe(3);
+    const sessionPatch = patchRequests[2];
+    expect(sessionPatch.url).toContain("version=eq.5");
+    expect(sessionPatch.body.version).toBe(6);
+    expect(sessionPatch.body.document.sessions.some((session) => session.name === "Cloud Session")).toBe(true);
+
+    await page.getByRole("button", { name: "Enter score" }).first().click();
+    const scoreDialog = page.getByRole("dialog", { name: "Court 1 score" });
+    await scoreDialog.getByRole("spinbutton", { name: "Team A score" }).fill("11");
+    await scoreDialog.getByRole("spinbutton", { name: "Team B score" }).fill("7");
+    await scoreDialog.getByRole("button", { name: "Save score" }).click();
+    await expect.poll(() => patchRequests.length).toBe(4);
+    expect(patchRequests[3].body.document.sessions[0].rounds[0].courts[0].score).toEqual({ a: 11, b: 7 });
+
+    await page.evaluate((databaseKey) => {
+      localStorage.removeItem(databaseKey);
+      sessionStorage.clear();
+      sessionStorage.setItem("pickleball.e2e.seeded", "1");
+    }, DB_KEY);
+    await page.goto("/?fresh=session#session");
+    await expect(page.getByRole("heading", { name: "Cloud Session" })).toBeVisible();
+    await expect(page.getByText("Done", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Score: 11 – 7" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Sessions" }).click();
+    await page.getByRole("button", { name: "Delete Cloud Session" }).click();
+    await expect(page).toHaveURL(/#more$/);
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Delete session?" })).toBeVisible();
+    await page.getByRole("dialog", { name: "Delete session?" }).getByRole("button", { name: "Delete", exact: true }).click();
+    await expect.poll(() => patchRequests.length).toBe(5);
+    expect(patchRequests[4].body.version).toBe(8);
+    expect(patchRequests[4].body.document.sessions).toEqual([]);
+
+    await page.evaluate((databaseKey) => {
+      localStorage.removeItem(databaseKey);
+      sessionStorage.clear();
+      sessionStorage.setItem("pickleball.e2e.seeded", "1");
+    }, DB_KEY);
+    await page.goto("/?fresh=deleted-session#session");
+    await expect(page.getByRole("heading", { name: "Play" })).toBeVisible();
+    await expect(page.getByText("No sessions yet.")).toBeVisible();
     expect(errors).toEqual([]);
   });
 
@@ -373,6 +426,15 @@ test.describe("core browser journeys", () => {
     await page.getByRole("button", { name: "Schedule" }).click();
     await page.getByRole("button", { name: /Tuesday Rally/ }).click();
     await expect(page.getByRole("button", { name: "Open session & scores" })).toBeVisible();
+    await page.getByRole("button", { name: "Open session & scores" }).click();
+    await page.getByRole("button", { name: "Sessions" }).click();
+    await page.getByRole("button", { name: "Delete Tuesday Rally" }).click();
+    await page.getByRole("dialog", { name: "Delete session?" }).getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText("No sessions yet.")).toBeVisible();
+    await expect.poll(() => page.evaluate((key) => {
+      const db = JSON.parse(localStorage.getItem(key));
+      return db.sessions.length === 0 && db.bookings.length === 1 && db.bookings[0].sessionId === null;
+    }, DB_KEY)).toBe(true);
     expect(errors).toEqual([]);
   });
 

@@ -12,14 +12,14 @@ A static, offline-first web app for managing pickleball players, booking court t
 - Tap-to-swap round editing with undo/redo
 - Score validation, skipped games, per-court timers, and full-screen display mode
 - All-time and per-session statistics, chemistry, head-to-head records, and repeat heatmaps
-- Full session history, print layouts, and JSON/CSV/text exports
+- Full session history with confirmed deletion, print layouts, and JSON/CSV/text exports
 - Supabase multi-device persistence, local offline cache, optional GitHub backup, and schema-checked imports
 - Installable PWA with an offline app shell and light/dark themes
 - Session-scoped administrator access through the More tab for cloud sync and protected settings
 
 ## Administrator Access
 
-Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player changes require authentication: choosing Add, Edit, Active/Inactive, Delete, or Clear samples while signed out opens More and resumes the action after sign-in. Other changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase rejects anonymous cloud writes.
+Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player and session changes require authentication. Starting, scoring, editing, or deleting a session while signed out opens More and resumes the action after sign-in. Other changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase rejects anonymous cloud writes.
 
 Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
 
@@ -150,5 +150,7 @@ Service workers require HTTPS, except that browsers also allow them on `localhos
 All durable application data is JSON with `schemaVersion: 1`. Player IDs, rather than names, are used as references in sessions, bookings, rounds, scores, and pair constraints, so players can be renamed without damaging history.
 
 Players are stored in the Supabase `public.app_state` row under `document.players`. Each authenticated cloud save writes the complete versioned document, so player additions, edits, active status, ratings, and notes are available in new browsers and on other devices.
+
+Sessions are stored in the same row under `document.sessions`, including their player IDs, rounds, assignments, scores, locks, and status. Deleting a session removes it from the shared document but keeps any linked court booking and clears that booking's session link.
 
 The default first run loads 12 clearly marked sample players. **Players > Clear samples** removes them in one undoable action.

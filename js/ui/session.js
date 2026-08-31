@@ -57,20 +57,31 @@ function renderStart(container, ctx) {
           { class: "list" },
           ...sessions.map((s) =>
             el(
-              "button",
-              {
-                class: "player-row",
-                type: "button",
-                style: { textAlign: "left", cursor: "pointer", width: "100%" },
-                onClick: () => openExisting(container, ctx, s.id),
-              },
+              "div",
+              { class: "player-row" },
               el(
-                "div",
-                { class: "player-row__info" },
-                el("div", { class: "player-row__name" }, s.name || s.date),
-                el("div", { class: "muted small" }, `${s.date} \u00b7 ${s.rounds.length} round(s) \u00b7 ${MODE_LABELS[s.mode] || s.mode}`),
+                "button",
+                { class: "session-row__open", type: "button", onClick: () => openExisting(container, ctx, s.id) },
+                el(
+                  "div",
+                  { class: "player-row__info" },
+                  el("div", { class: "player-row__name" }, s.name || s.date),
+                  el("div", { class: "muted small" }, `${s.date} \u00b7 ${s.rounds.length} round(s) \u00b7 ${MODE_LABELS[s.mode] || s.mode}`),
+                ),
+                el("span", { class: "badge badge--completed" }, `${s.playerIds.length}p`),
               ),
-              el("span", { class: "badge badge--completed" }, `${s.playerIds.length}p`),
+              el(
+                "button",
+                {
+                  class: "iconbtn",
+                  type: "button",
+                  title: "Delete session",
+                  "aria-label": `Delete ${s.name || s.date}`,
+                  style: { color: "var(--danger)" },
+                  onClick: () => deleteSession(container, ctx, s),
+                },
+                el("span", { "aria-hidden": "true" }, "\uD83D\uDDD1"),
+              ),
             ),
           ),
         )
@@ -86,7 +97,34 @@ function openExisting(container, ctx, sessionId) {
   ctx.refresh();
 }
 
+function deleteSession(container, ctx, session) {
+  if (!requireSessionAdmin(ctx, () => deleteSession(container, ctx, session))) return;
+
+  const label = session.name || session.date;
+  confirmDialog({
+    title: "Delete session?",
+    message: `Delete ${label}? Scores and rounds in this session will be removed. Any linked court booking will be kept.`,
+    confirmLabel: "Delete",
+    tone: "danger",
+  }).then((confirmed) => {
+    if (!confirmed) return;
+    ctx.store.commit(`Delete ${label}`, (draft) => {
+      draft.sessions = draft.sessions.filter((item) => item.id !== session.id);
+      for (const booking of draft.bookings) {
+        if (booking.sessionId === session.id) booking.sessionId = null;
+      }
+    });
+    showToast("Session deleted.", {
+      actionLabel: "Undo",
+      onAction: () => ctx.store.undo(),
+    });
+    ctx.refresh();
+  });
+}
+
 function startSetup(container, ctx) {
+  if (!requireSessionAdmin(ctx, () => startSetup(container, ctx))) return;
+
   const { store } = ctx;
   const db = store.getDb();
   const activePlayerIds = db.players.filter((p) => p.active).map((p) => p.id);
@@ -109,6 +147,8 @@ function startSetup(container, ctx) {
 
 // Public: prefill setup from a booking (used by the schedule tab).
 export function startSetupFromBooking(container, ctx, booking) {
+  if (!requireSessionAdmin(ctx, () => startSetupFromBooking(container, ctx, booking))) return;
+
   const { store } = ctx;
   const db = store.getDb();
   const activePlayerIds = db.players.filter((p) => p.active).map((p) => p.id);
@@ -329,6 +369,8 @@ function summaryItem(num, label) {
 }
 
 function doGenerate(container, ctx) {
+  if (!requireSessionAdmin(ctx, () => doGenerate(container, ctx))) return;
+
   const { store } = ctx;
   const db = store.getDb();
   const draft = getDraft(container);
@@ -567,6 +609,8 @@ function slotPlayerId(round, slot) {
 }
 
 function onSlotTap(session, round, container, ctx, slot) {
+  if (!requireSessionAdmin(ctx, () => onSlotTap(session, round, container, ctx, slot))) return;
+
   const draft = getDraft(container);
   const sel = draft.selectedSlot;
   if (!sel) {
@@ -656,6 +700,8 @@ function setSlotPlayer(round, slot, value) {
 }
 
 function toggleCourtLock(session, round, court, ctx) {
+  if (!requireSessionAdmin(ctx, () => toggleCourtLock(session, round, court, ctx))) return;
+
   ctx.store.commit(court.locked ? "Unlock court" : "Lock court", (d) => {
     const s = d.sessions.find((x) => x.id === session.id);
     const r = s.rounds.find((x) => x.roundNumber === round.roundNumber);
@@ -666,6 +712,8 @@ function toggleCourtLock(session, round, court, ctx) {
 }
 
 function openScoreEntry(court, session, round, ctx, playerById, rules) {
+  if (!requireSessionAdmin(ctx, () => openScoreEntry(court, session, round, ctx, playerById, rules))) return;
+
   const { store } = ctx;
   const aInput = el("input", { type: "number", min: "0", inputmode: "numeric", value: court.score ? String(court.score.a) : "", "aria-label": "Team A score" });
   const bInput = el("input", { type: "number", min: "0", inputmode: "numeric", value: court.score ? String(court.score.b) : "", "aria-label": "Team B score" });
@@ -744,6 +792,8 @@ function nextRound(session, idx, container, ctx) {
     return;
   }
 
+  if (!requireSessionAdmin(ctx, () => nextRound(session, idx, container, ctx))) return;
+
   const db = store.getDb();
   const activeIds = session.playerIds.filter((id) => {
     const p = db.players.find((x) => x.id === id);
@@ -783,6 +833,8 @@ function nextRound(session, idx, container, ctx) {
 }
 
 function regenerateRound(session, idx, container, ctx) {
+  if (!requireSessionAdmin(ctx, () => regenerateRound(session, idx, container, ctx))) return;
+
   const { store } = ctx;
   const round = session.rounds[idx];
   const hasScores = round.courts.some((c) => c.status !== "pending");
@@ -833,6 +885,8 @@ function regenerateRound(session, idx, container, ctx) {
 }
 
 function addPlayerMidSession(session, ctx) {
+  if (!requireSessionAdmin(ctx, () => addPlayerMidSession(session, ctx))) return;
+
   const { store } = ctx;
   const db = store.getDb();
   const notInSession = db.players.filter((p) => p.active && !session.playerIds.includes(p.id));
@@ -883,4 +937,10 @@ function backToStart(container, ctx) {
   draft.viewIndex = null;
   ctx.store.setUi({ currentSessionId: null });
   ctx.refresh();
+}
+
+function requireSessionAdmin(ctx, action) {
+  if (!ctx.cloud.isConfigured() || ctx.auth.isAuthenticated()) return true;
+  ctx.requireAdmin("session management", action);
+  return false;
 }
