@@ -6,6 +6,7 @@
 import { el, mount } from "./dom.js";
 import { showToast, confirmDialog, openDialog } from "./feedback.js";
 import { startSetupFromBooking } from "./session.js";
+import { attendanceLine, bookingAttendance, openRsvpDialog } from "./rsvp.js";
 import {
   timeToMinutes,
   minutesToTime,
@@ -47,6 +48,8 @@ function getViewState(container, ctx) {
 export function renderSchedule(container, ctx) {
   const { store } = ctx;
   const db = store.getDb();
+  // Cheap and throttled: only re-renders when someone else's reply has landed.
+  void ctx.rsvps.refresh().catch(() => {});
   const state = getViewState(container, ctx);
   const days = weekDays(state.weekStart);
   const today = localDateString();
@@ -71,11 +74,11 @@ export function renderSchedule(container, ctx) {
       ? dayView(container, ctx, state, sessionByBooking, today)
       : weekView(container, ctx, state, days, sessionByBooking, today),
     legend(),
-    printSchedule(db, days),
+    printSchedule(ctx, db, days),
   );
 }
 
-function printSchedule(db, days) {
+function printSchedule(ctx, db, days) {
   const sessionsById = new Map(db.sessions.map((session) => [session.id, session]));
   const bookings = db.bookings
     .filter((booking) => booking.date >= days[0] && booking.date <= days[6])
@@ -93,7 +96,7 @@ function printSchedule(db, days) {
           el(
             "thead",
             {},
-            el("tr", {}, ...["Date", "Time", "Booking", "Courts", "Location", "Status"].map((label) => el("th", {}, label))),
+            el("tr", {}, ...["Date", "Time", "Booking", "Courts", "Location", "Going", "Status"].map((label) => el("th", {}, label))),
           ),
           el(
             "tbody",
@@ -109,6 +112,7 @@ function printSchedule(db, days) {
                 el("td", {}, booking.name || "Court booking"),
                 el("td", {}, String(booking.courtCount)),
                 el("td", {}, booking.location || "\u2014"),
+                el("td", {}, bookingAttendance(ctx, booking).going.map((player) => player.name).join(", ") || "\u2014"),
                 el("td", {}, status === "progress" ? "In progress" : status[0].toUpperCase() + status.slice(1)),
               );
             }),
@@ -229,6 +233,7 @@ function dayColumn(container, ctx, day, allBookings, sessionByBooking) {
   for (const booking of dayBookings) {
     const session = sessionByBooking.get(booking.id) || null;
     const status = bookingStatus(booking, session);
+    const { counts } = bookingAttendance(ctx, booking);
     const { top, height } = blockPlacement(booking, START_HOUR, PX_PER_HOUR);
     col.appendChild(
       el(
@@ -236,11 +241,17 @@ function dayColumn(container, ctx, day, allBookings, sessionByBooking) {
         {
           class: `booking-block booking-block--${status}`,
           type: "button",
+          title: counts.replied ? `${booking.name || "Court time"} \u00b7 ${attendanceLine(counts)}` : null,
           style: { top: `${Math.max(0, top)}px`, height: `${height}px` },
           onClick: (e) => { e.stopPropagation(); openBookingActions(container, ctx, booking, session); },
         },
         el("span", { class: "booking-block__title" }, booking.name || "Court time"),
-        el("span", {}, `${booking.startTime}\u2013${bookingEndTime(booking)} \u00b7 ${booking.courtCount}c`),
+        el(
+          "span",
+          {},
+          `${booking.startTime}\u2013${bookingEndTime(booking)} \u00b7 ${booking.courtCount}c`,
+          counts.replied ? el("span", { class: "booking-block__going" }, `\u2713${counts.going}`) : null,
+        ),
       ),
     );
   }
@@ -254,7 +265,7 @@ function legend() {
     legendDot("var(--blue)", "Upcoming"),
     legendDot("#b58a00", "In progress"),
     legendDot("var(--court-green)", "Completed"),
-    el("span", {}, "Tap a block for actions \u00b7 tap empty space to book."),
+    el("span", {}, "\u2713 = players going \u00b7 tap a block for actions \u00b7 tap empty space to book."),
   );
 }
 
@@ -396,6 +407,7 @@ function openBookingForm(container, ctx, booking, prefill = {}) {
         const s = d.sessions.find((x) => x.id === (snapshot.sessionId || ""));
         if (s) s.bookingId = null;
       });
+      void ctx.rsvps.removeBooking(booking.id);
       controller.close();
       renderSchedule(container, ctx);
       showToast("Booking deleted.", { actionLabel: "Undo", onAction: () => { store.undo(); renderSchedule(container, ctx); } });
@@ -410,6 +422,9 @@ function openBookingActions(container, ctx, booking, session) {
   const { store } = ctx;
   const status = bookingStatus(booking, session);
 
+  const { counts } = bookingAttendance(ctx, booking);
+  const summary = attendanceLine(counts);
+
   const body = el(
     "div",
     { class: "stack" },
@@ -419,9 +434,18 @@ function openBookingActions(container, ctx, booking, session) {
     session
       ? el("p", {}, el("strong", {}, "Linked session: "), `${session.name || session.date} \u00b7 ${session.rounds.length} round(s) \u00b7 ${status}`)
       : el("p", { class: "muted small" }, "No session linked yet."),
+    el("p", {}, el("strong", {}, "Attendance: "), summary || "nobody has replied yet."),
   );
 
-  const actions = [el("button", { class: "btn btn--ghost", type: "button", onClick: () => { controller.close(); openBookingForm(container, ctx, booking); } }, "Edit")];
+  // Replying is open to everyone; editing the booking is not.
+  const actions = [
+    el(
+      "button",
+      { class: "btn btn--ghost", type: "button", style: { marginRight: "auto" }, onClick: () => { controller.close(); openRsvpDialog(ctx, booking); } },
+      "Who's coming?",
+    ),
+    el("button", { class: "btn btn--ghost", type: "button", onClick: () => { controller.close(); openBookingForm(container, ctx, booking); } }, "Edit"),
+  ];
   if (session) {
     actions.push(el("button", { class: "btn btn--primary", type: "button", onClick: () => { controller.close(); openLinkedSession(ctx, session.id); } }, "Open session & scores"));
   } else {

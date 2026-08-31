@@ -1,6 +1,17 @@
 import { test, expect } from "@playwright/test";
 
+import { readFileSync } from "node:fs";
+
 import { collectBrowserErrors, configureCloud, createTestDatabase, isolateCloud, seedDatabase } from "./fixtures.js";
+
+// Read the cache name from the worker itself, so bumping it (which every shell
+// change must do) never means editing this file too.
+const SHELL_CACHE = (() => {
+  const source = readFileSync(new URL("../../sw.js", import.meta.url), "utf8");
+  const match = /const CACHE = "([^"]+)"/.exec(source);
+  if (!match) throw new Error("sw.js no longer declares a CACHE name.");
+  return match[1];
+})();
 
 test.beforeEach(async ({ page }) => {
   await isolateCloud(page);
@@ -20,16 +31,16 @@ test("service worker caches the full shell and reloads offline", async ({ contex
   }
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
 
-  const cacheState = await page.evaluate(async () => {
+  const cacheState = await page.evaluate(async (cacheName) => {
     const names = await caches.keys();
-    const cache = await caches.open("pickleball-v11");
+    const cache = await caches.open(cacheName);
     const requests = await cache.keys();
     return {
       names,
       paths: requests.map((request) => new URL(request.url).pathname),
     };
-  });
-  expect(cacheState.names).toContain("pickleball-v11");
+  }, SHELL_CACHE);
+  expect(cacheState.names).toContain(SHELL_CACHE);
   expect(cacheState.paths.some((path) => path.endsWith("/index.html"))).toBe(true);
   expect(cacheState.paths.some((path) => path.endsWith("/assets/icons/icon-maskable.png"))).toBe(true);
 
@@ -70,7 +81,7 @@ test("service worker registers when cloud startup finishes after window load", a
   releaseCloud();
 
   await page.waitForFunction(async () => Boolean((await navigator.serviceWorker.ready).active));
-  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v11"))).toBe(true);
+  await expect.poll(() => page.evaluate(async (cacheName) => (await caches.keys()).includes(cacheName), SHELL_CACHE)).toBe(true);
 });
 
 test("a fresh worker removes obsolete app-shell caches on activation", async ({ page }) => {
@@ -87,5 +98,5 @@ test("a fresh worker removes obsolete app-shell caches on activation", async ({ 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(async () => Boolean((await navigator.serviceWorker.ready).active));
   await expect.poll(() => page.evaluate(async () => !(await caches.keys()).includes("pickleball-obsolete-test"))).toBe(true);
-  await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("pickleball-v11"))).toBe(true);
+  await expect.poll(() => page.evaluate(async (cacheName) => (await caches.keys()).includes(cacheName), SHELL_CACHE)).toBe(true);
 });

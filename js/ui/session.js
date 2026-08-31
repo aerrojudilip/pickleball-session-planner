@@ -8,6 +8,7 @@ import { createSession, localDateString, MODES, clamp } from "../schema.js";
 import { generateRounds, generateRound, analyzeRoundFairness, validateConstraints } from "../scheduler.js";
 import { deriveRoundSeed, randomSeed } from "../rng.js";
 import { validateScore, effectiveRules } from "../scoring.js";
+import { goingPlayerIds } from "../rsvp.js";
 
 const MODE_LABELS = {
   random: "Pure random",
@@ -152,6 +153,10 @@ export function startSetupFromBooking(container, ctx, booking) {
   const { store } = ctx;
   const db = store.getDb();
   const activePlayerIds = db.players.filter((p) => p.active).map((p) => p.id);
+  // Whoever replied "going" is the best guess at who turns up; fall back to the
+  // full active roster when nobody has replied to this booking.
+  const knownIds = new Set(db.players.map((p) => p.id));
+  const going = goingPlayerIds(ctx.rsvps.forBooking(booking.id)).filter((id) => knownIds.has(id));
   const draft = getDraft(container);
   draft.mode = "setup";
   draft.config = {
@@ -159,7 +164,7 @@ export function startSetupFromBooking(container, ctx, booking) {
     name: booking.name || "",
     location: booking.location || "",
     courtCount: clamp(booking.courtCount, 1, 12),
-    selectedIds: new Set(activePlayerIds),
+    selectedIds: new Set(going.length ? going : activePlayerIds),
     mode: db.settings.mode,
     seed: randomSeed(),
     roundCount: 1,

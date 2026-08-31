@@ -400,15 +400,18 @@ test.describe("core browser journeys", () => {
   test("configured Supabase deletes corrupt browser data and loads the cloud database", async ({ page }) => {
     const cloudDatabase = createTestDatabase();
     cloudDatabase.players[0].name = "Cloud Current";
-    let cloudRequests = 0;
+    const cloudRequests = { app_state: 0, booking_rsvps: 0 };
     await configureCloud(page);
     await page.addInitScript((key) => localStorage.setItem(key, "{broken"), DB_KEY);
     await page.route("https://fixture.supabase.co/**", async (route) => {
-      cloudRequests += 1;
+      const isRsvps = route.request().url().includes("booking_rsvps");
+      cloudRequests[isRsvps ? "booking_rsvps" : "app_state"] += 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
+        body: isRsvps
+          ? "[]"
+          : JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
       });
     });
 
@@ -416,7 +419,9 @@ test.describe("core browser journeys", () => {
     await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
     await expect(page.getByText(/Saved data was unreadable/)).toHaveCount(0);
     expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
-    expect(cloudRequests).toBe(1);
+    // The document is read once at boot, alongside one read of the replies.
+    expect(cloudRequests.app_state).toBe(1);
+    await expect.poll(() => cloudRequests.booking_rsvps).toBe(1);
   });
 
   test("375px Players stays usable and a new player persists after reload", async ({ page }) => {
@@ -652,6 +657,72 @@ test.describe("core browser journeys", () => {
       databaseHasToken: localStorage.getItem(dbKey).includes("e2e-fake-token"),
     }), { credentialsKey: CREDENTIALS_KEY, dbKey: DB_KEY });
     expect(isolated).toEqual({ credentialKeyHasToken: true, databaseHasToken: false });
+    expect(errors).toEqual([]);
+  });
+
+  test("a player replies to a booked court without signing in", async ({ page }) => {
+    await seedDatabase(page, createTestDatabase({ withBooking: true }), { authenticated: false });
+    const errors = collectBrowserErrors(page);
+    await page.goto("/#schedule");
+
+    await page.getByRole("button", { name: /Evening Rally/ }).click();
+    const actions = page.getByRole("dialog", { name: "Evening Rally" });
+    await expect(actions.getByText("nobody has replied yet.")).toBeVisible();
+    await actions.getByRole("button", { name: "Who's coming?" }).click();
+
+    const rsvp = page.getByRole("dialog", { name: "Evening Rally" });
+    await expect(rsvp.getByRole("button", { name: "Going", exact: true })).toBeDisabled();
+    await rsvp.getByLabel("Your name").selectOption({ label: "Player 3" });
+    await expect(rsvp.getByText("Player 3, are you coming?")).toBeVisible();
+
+    await rsvp.getByRole("button", { name: "Going", exact: true }).click();
+    await expect(rsvp.getByRole("button", { name: "Going", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(rsvp.getByText("Going (1)", { exact: true })).toBeVisible();
+    await expect(rsvp.getByText("No reply yet (7)")).toBeVisible();
+
+    // Changing an answer replaces it rather than adding a second reply.
+    await rsvp.getByRole("button", { name: "Maybe", exact: true }).click();
+    await expect(rsvp.getByText("Going (0)", { exact: true })).toBeVisible();
+    await expect(rsvp.getByText("Maybe (1)", { exact: true })).toBeVisible();
+    await rsvp.getByRole("button", { name: "Done" }).click();
+
+    // The reply survives a reload, and the name is remembered on this device.
+    await page.reload();
+    await page.getByRole("button", { name: /Evening Rally/ }).click();
+    await expect(page.getByText("Attendance: 1 maybe")).toBeVisible();
+    await page.getByRole("button", { name: "Who's coming?" }).click();
+    await expect(page.getByLabel("Your name")).toHaveValue("p3");
+    await expect(page.getByRole("button", { name: "Maybe", exact: true })).toHaveAttribute("aria-pressed", "true");
+    expect(errors).toEqual([]);
+  });
+
+  test("replies preselect who plays when the booking becomes a session", async ({ page }) => {
+    await seedDatabase(page, createTestDatabase({ withBooking: true }));
+    const errors = collectBrowserErrors(page);
+    await page.goto("/#schedule");
+
+    await page.getByRole("button", { name: /Evening Rally/ }).click();
+    await page.getByRole("button", { name: "Who's coming?" }).click();
+    const rsvp = page.getByRole("dialog", { name: "Evening Rally" });
+    for (const name of ["Player 1", "Player 2", "Player 5", "Player 6"]) {
+      await rsvp.getByLabel("Your name").selectOption({ label: name });
+      await rsvp.getByRole("button", { name: "Going", exact: true }).click();
+    }
+    await expect(rsvp.getByText("Going (4)", { exact: true })).toBeVisible();
+    await rsvp.getByRole("button", { name: "Done" }).click();
+
+    // The calendar block carries the going count.
+    await expect(page.getByRole("button", { name: /Evening Rally/ })).toContainText("4");
+
+    await page.getByRole("button", { name: /Evening Rally/ }).click();
+    await page.getByRole("button", { name: "Start session" }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
+    for (const name of ["Player 1", "Player 2", "Player 5", "Player 6"]) {
+      await expect(page.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
+    }
+    for (const name of ["Player 3", "Player 4", "Player 7", "Player 8"]) {
+      await expect(page.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+    }
     expect(errors).toEqual([]);
   });
 

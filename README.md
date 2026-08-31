@@ -6,6 +6,7 @@ A static, cloud-backed web app for managing pickleball players, booking court ti
 
 - Persistent players with ratings, notes, active status, and sample data
 - Day/week court-booking calendar linked to play sessions
+- Player attendance replies (Going, Maybe, Not going) on any booked court, with no login
 - Seeded, constrained round generation for 1-12 courts
 - Random, balanced, king-of-the-court, and fixed-partner modes
 - Fair sit-outs, hard pair constraints, editable scheduler weights, and locked courts
@@ -19,14 +20,16 @@ A static, cloud-backed web app for managing pickleball players, booking court ti
 
 ## Administrator Access
 
-Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player, booking, session, and settings changes require authentication. Starting one of these changes while signed out opens More and resumes the intended action after sign-in. Supabase rejects anonymous writes.
+Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player, booking, session, and settings changes require authentication. Starting one of these changes while signed out opens More and resumes the intended action after sign-in. Supabase rejects anonymous writes to the planner document.
+
+Attendance replies are the one deliberate exception: any visitor can answer Going, Maybe, or Not going for a booked court. See [Attendance Replies](#attendance-replies).
 
 Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
 
 ## Configure The Free Database
 
 1. Create a free project at [supabase.com](https://supabase.com). Enter the generated database password directly in Supabase and keep it outside this repository.
-2. Open **SQL Editor** in the project, paste [supabase/schema.sql](supabase/schema.sql), and run it once. This creates the single JSONB document table, version checks, grants, and RLS policies.
+2. Open **SQL Editor** in the project, paste [supabase/schema.sql](supabase/schema.sql), and run it once. This creates the single JSONB document table, the attendance replies table, version checks, grants, and RLS policies. Re-run the whole file after upgrading an existing deployment: it is idempotent, and attendance replies do not work until `public.booking_rsvps` exists.
 3. Open **Authentication > Users**, select **Add user**, and create `admin@pickleball-planner.app`. Set it to the administrator password agreed for this deployment and mark the email confirmed. Passwords belong only in Supabase Auth, never in source control.
 4. Open **Project Settings > API** and copy the **Project URL** and **Publishable key**. A legacy `anon` key also works. Do not copy the `service_role` key.
 5. Put only those public values into [js/config.js](js/config.js):
@@ -45,6 +48,23 @@ export const SUPABASE_CONFIG = Object.freeze(deployedConfig);
 6. Commit and deploy the configuration. Open the app and sign in as `admin`. If the table is empty, the first administrator sign-in initializes it with the built-in sample players. Use **More > Cloud database > Sync now** to request an immediate save after later changes.
 
 The supplied read policy is public so players and read-only statistics can load on any device without a login. Because the app stores one complete JSON document, player names, notes, bookings, sessions, and scores are consequently readable through the public API. Do not put confidential information in this deployment. For private data, remove `anon` from the select grant and policy in [supabase/schema.sql](supabase/schema.sql); public data will then require authentication too.
+
+## Attendance Replies
+
+Every booked court on the **Schedule** tab collects attendance. Tap a booking block, then **Who's coming?**. Pick a name from the roster and answer **Going**, **Maybe**, or **Not going**. Replying again replaces the previous answer rather than adding a second one.
+
+- No sign-in is needed. Anyone with the app URL can reply, which is the point: players answer on their own phones.
+- The chosen name is remembered on that device, so a returning player only taps their answer.
+- The dialog lists everyone grouped by answer, including who has not replied yet.
+- Calendar blocks show a check mark and the going count, and the printed week gains a **Going** column.
+- Starting a session from a booking preselects whoever replied **Going**. If nobody has replied, the full active roster is preselected as before.
+- Deleting a booking (an administrator action) also deletes its replies.
+
+Replies are stored in `public.booking_rsvps`, one row per booking and player, separate from the planner document. Only the administrator can write the planner document; anyone may insert or update an attendance row, and only the administrator may delete one. Answers are constrained to the three values by a database check, and the calendar and picker only ever offer real bookings and real players.
+
+There is no per-player password, so a name picker is exactly as trustworthy as the group holding the link: whoever selects a name can set that name's answer. That trade-off is deliberate for a club planner. Treat attendance as a roll call, not an authenticated record, and do not deploy this to an untrusted audience.
+
+Where Supabase is not configured, replies fall back to that browser's `localStorage` under `pickleball.rsvps.v1` and stay on the one device. The remembered name lives in `pickleball.rsvp.identity.v1`.
 
 ## Run Locally
 
@@ -152,5 +172,7 @@ All durable application data is JSON with `schemaVersion: 1`. Player IDs, rather
 Players are stored in the Supabase `public.app_state` row under `document.players`. Each authenticated cloud save writes the complete versioned document, so player additions, edits, active status, ratings, and notes are available in new browsers and on other devices.
 
 Sessions are stored in the same row under `document.sessions`, including their player IDs, rounds, assignments, scores, locks, and status. Deleting a session removes it from the shared document but keeps any linked court booking and clears that booking's session link.
+
+Attendance replies are the one piece of durable data kept outside the document, in `public.booking_rsvps`, because every visitor may write their own reply. They are keyed by booking ID and player ID, are not part of JSON exports, and are removed with their booking.
 
 The default first run loads 12 clearly marked sample players. **Players > Clear samples** removes them in one undoable action.

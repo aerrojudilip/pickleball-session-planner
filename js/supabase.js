@@ -9,6 +9,10 @@ export const SUPABASE_SESSION_KEY = "pickleball.supabase.session.v1";
 // Legacy key removed by configured deployments during startup.
 export const SUPABASE_SYNC_KEY = "pickleball.supabase.sync.v1";
 
+/** Attendance replies table; every visitor may read and write these rows. */
+const RSVP_TABLE = "booking_rsvps";
+const RSVP_SELECT = "booking_id,player_id,response,updated_at";
+
 export class SupabaseError extends Error {
   constructor(message, { status = 0, code = "", cause = null } = {}) {
     super(message, cause ? { cause } : undefined);
@@ -154,6 +158,56 @@ export function createSupabaseBackend(options = {}, dependencies = {}) {
     return { version: remoteVersion, updatedAt: rows[0].updated_at || null };
   }
 
+  // --- Attendance replies -------------------------------------------------
+  // These live in their own table because every visitor may write them, while
+  // `app_state` stays administrator-only. Requests carry the administrator
+  // token when one is present and fall back to the anonymous role otherwise.
+
+  async function loadRsvps() {
+    assertConfigured();
+    const accessToken = await validAccessToken(false);
+    const response = await fetchResponse(
+      `${config.url}/rest/v1/${RSVP_TABLE}?select=${RSVP_SELECT}`,
+      { method: "GET", headers: restHeaders(accessToken) },
+      "Could not reach the attendance service.",
+    );
+    if (!response.ok) throw await responseError(response, "Could not load attendance replies.");
+    const rows = await response.json();
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async function saveRsvp(rsvp) {
+    assertConfigured();
+    const accessToken = await validAccessToken(false);
+    const response = await fetchResponse(
+      `${config.url}/rest/v1/${RSVP_TABLE}?select=${RSVP_SELECT}`,
+      {
+        method: "POST",
+        headers: { ...restHeaders(accessToken), Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({
+          booking_id: String(rsvp.bookingId || ""),
+          player_id: String(rsvp.playerId || ""),
+          response: String(rsvp.response || ""),
+        }),
+      },
+      "Could not reach the attendance service.",
+    );
+    if (!response.ok) throw await responseError(response, "Could not save your reply.");
+    const rows = await response.json();
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  }
+
+  async function deleteRsvpsForBooking(bookingId) {
+    assertConfigured();
+    const accessToken = await validAccessToken(true);
+    const response = await fetchResponse(
+      `${config.url}/rest/v1/${RSVP_TABLE}?booking_id=eq.${encodeURIComponent(bookingId)}`,
+      { method: "DELETE", headers: restHeaders(accessToken) },
+      "Could not reach the attendance service.",
+    );
+    if (!response.ok) throw await responseError(response, "Could not remove attendance replies.");
+  }
+
   function markPending() {
     if (!isConfigured()) return pendingGeneration;
     pendingGeneration += 1;
@@ -296,6 +350,9 @@ export function createSupabaseBackend(options = {}, dependencies = {}) {
     signOut,
     loadDatabase,
     saveDatabase,
+    loadRsvps,
+    saveRsvp,
+    deleteRsvpsForBooking,
     getSyncState: () => ({ ...syncState }),
     getObservedRemoteVersion: () => observedRemoteVersion,
     markPending,

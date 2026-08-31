@@ -1542,6 +1542,75 @@ table.data th.num {
 
 
 
+/* ---------- Attendance replies ---------- */
+.booking-block__going {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.rsvp-chip {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 8px 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rsvp-chip:disabled {
+  opacity: 0.55;
+}
+/* Each reply keeps its own colour when chosen, so the answer reads at a glance
+   rather than every chip turning the same green. */
+.rsvp-chip--going.chip--on {
+  background: var(--court-green);
+  border-color: var(--court-green);
+}
+.rsvp-chip--maybe.chip--on {
+  background: #b58a00;
+  border-color: #b58a00;
+}
+.rsvp-chip--not_going.chip--on {
+  background: var(--coral);
+  border-color: var(--coral);
+}
+.rsvp-group {
+  border-left: 4px solid var(--border);
+  padding-left: 10px;
+}
+.rsvp-group--going {
+  border-left-color: var(--court-green);
+}
+.rsvp-group--maybe {
+  border-left-color: #b58a00;
+}
+.rsvp-group--not_going {
+  border-left-color: var(--coral);
+}
+.rsvp-group__title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.rsvp-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rsvp-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 3px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.85rem;
+}
+.rsvp-person--me {
+  outline: 2px solid var(--blue);
+}
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * {

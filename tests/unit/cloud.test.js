@@ -384,15 +384,69 @@ test("cloud persistence ignores UI state and flushes the latest durable mutation
   persister.unsubscribe();
 });
 
-test("Supabase schema enables RLS without granting anonymous writes", async () => {
+/**
+ * Every `grant <privileges> on table public.<name> to <roles>;` in the schema,
+ * split so each table's grants can be judged on their own.
+ */
+function tableGrants(sql, table) {
+  const marker = `on table public.${table} to `;
+  return sql
+    .split("\n")
+    .map((line) => line.replace(/--.*$/, ""))
+    .join("\n")
+    .split(";")
+    .map((statement) => statement.trim().toLowerCase().replace(/\s+/g, " "))
+    .filter((statement) => statement.startsWith("grant ") && statement.includes(marker))
+    .map((statement) => {
+      const [privileges, roles] = statement.slice("grant ".length).split(marker);
+      return {
+        privileges: privileges.trim(),
+        roles: roles.split(",").map((role) => role.trim()),
+      };
+    });
+}
+
+test("Supabase schema enables RLS and keeps the planner document administrator-only", async () => {
   const sql = await readFile(new URL("../../supabase/schema.sql", import.meta.url), "utf8");
   assert.match(sql, /enable row level security/i);
-  assert.match(sql, /grant select[^;]+to anon, authenticated/i);
-  assert.doesNotMatch(sql, /grant (?:insert|update|delete)[^;]+to anon/i);
-  assert.match(sql, /for insert\s+to authenticated/i);
-  assert.match(sql, /for update\s+to authenticated/i);
   assert.match(sql, /auth\.jwt\(\)[^;]+admin@pickleball-planner\.app/i);
   assert.match(sql, /new\.version <> old\.version \+ 1/i);
+
+  const appState = tableGrants(sql, "app_state");
+  assert.ok(appState.length, "app_state grants are declared");
+  for (const grant of appState) {
+    if (!grant.roles.includes("anon")) continue;
+    assert.ok(
+      grant.privileges === "select",
+      `anon may only read app_state, found: ${grant.privileges}`,
+    );
+  }
+  assert.match(sql, /for insert\s+to authenticated/i);
+  assert.match(sql, /for update\s+to authenticated/i);
+});
+
+test("Supabase schema lets anyone reply to a booking but not delete replies", async () => {
+  const sql = await readFile(new URL("../../supabase/schema.sql", import.meta.url), "utf8");
+  const rsvps = tableGrants(sql, "booking_rsvps");
+  assert.ok(rsvps.length, "booking_rsvps grants are declared");
+
+  const anonPrivileges = rsvps
+    .filter((grant) => grant.roles.includes("anon"))
+    .map((grant) => grant.privileges);
+  // Replying is the whole point: an unauthenticated player must be able to
+  // write their own row.
+  assert.ok(anonPrivileges.some((p) => p.startsWith("select")));
+  assert.ok(anonPrivileges.some((p) => p.startsWith("insert")));
+  assert.ok(anonPrivileges.some((p) => p.startsWith("update")));
+  // Wiping replies stays with the administrator.
+  assert.ok(!anonPrivileges.some((p) => p.startsWith("delete")));
+  assert.match(sql, /grant delete on table public\.booking_rsvps to authenticated/i);
+  assert.match(sql, /for delete\s+to authenticated/i);
+
+  // The reply column is constrained, and the table is not a free-form store.
+  assert.match(sql, /response in \('going', 'maybe', 'not_going'\)/i);
+  assert.match(sql, /primary key \(booking_id, player_id\)/i);
+  assert.match(sql, /alter table public\.booking_rsvps enable row level security/i);
 });
 
 test("cloud reads do not access browser sync storage", async () => {

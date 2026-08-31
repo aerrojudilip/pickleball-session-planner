@@ -15,6 +15,7 @@ import { bootstrapSamples } from "./samples.js";
 import { createAdminAuth } from "./auth.js";
 import { SUPABASE_CONFIG } from "./config.js";
 import { createCloudPersister, createSupabaseBackend, SupabaseConflictError, SUPABASE_SYNC_KEY } from "./supabase.js";
+import { createLocalRsvpTransport, createRsvpStore } from "./rsvp.js";
 import { initFeedback, showToast, confirmDialog, openDialog } from "./ui/feedback.js";
 import { startOfWeek } from "./bookings.js";
 
@@ -181,6 +182,38 @@ async function boot() {
     }
   });
 
+  // ---- Attendance replies ----
+  // These live outside the app document: every visitor may write their own
+  // reply, while the document itself stays administrator-only.
+  let rsvpErrorShown = false;
+  const rsvps = createRsvpStore(
+    cloudConfigured
+      ? {
+          load: () => cloudBackend.loadRsvps(),
+          save: (record) => cloudBackend.saveRsvp(record),
+          removeBooking: (bookingId) => cloudBackend.deleteRsvpsForBooking(bookingId),
+        }
+      : createLocalRsvpTransport(),
+    {
+      onError: (error) => {
+        // eslint-disable-next-line no-console
+        console.error(error);
+        if (rsvpErrorShown) return;
+        rsvpErrorShown = true;
+        showToast("Attendance replies are unavailable right now.", { tone: "danger", duration: 10000 });
+      },
+    },
+  );
+  rsvps.subscribe(() => {
+    if (store.getUi().route !== "schedule") return;
+    // A modal owns the focus while it is open, and re-rendering the page under
+    // it would take that focus away. The dialog redraws itself and asks for a
+    // page refresh when it closes.
+    if (dialogRoot.childElementCount > 0) return;
+    refresh();
+  });
+  void rsvps.refresh().catch(() => {});
+
   // ---- Theme ----
   applyTheme(store.getDb().settings.theme);
   const mql = window.matchMedia("(prefers-color-scheme: dark)");
@@ -199,6 +232,7 @@ async function boot() {
     openDialog,
     applyTheme,
     auth,
+    rsvps,
     requireAdmin,
     afterAdminSignIn,
     cloud: {
