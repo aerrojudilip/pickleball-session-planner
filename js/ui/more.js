@@ -115,7 +115,7 @@ export function renderMore(container, ctx) {
     section(
       "Reset",
       el("p", { class: "muted small" }, ctx.cloud && ctx.cloud.isConfigured()
-        ? "Remove all sessions, players, and bookings from the shared database and this browser cache."
+        ? "Remove all sessions, players, and bookings from the shared database."
         : "Remove all sessions, players, and bookings from this browser."),
       el(
         "div",
@@ -125,7 +125,7 @@ export function renderMore(container, ctx) {
       ),
     ),
 
-    el("p", { class: "muted small", style: { marginTop: "16px", textAlign: "center" } }, "Pickleball Session Planner \u00b7 offline-first \u00b7 administrator access enabled"),
+    el("p", { class: "muted small", style: { marginTop: "16px", textAlign: "center" } }, "Pickleball Session Planner \u00b7 cloud database \u00b7 administrator access enabled"),
   );
 }
 
@@ -185,7 +185,7 @@ function cloudDatabaseSection(ctx) {
 
   return section(
     "Cloud database",
-    el("p", { class: "muted small" }, "Supabase is the shared primary store. This browser keeps an offline cache and queues each administrator change for cloud storage."),
+    el("p", { class: "muted small" }, "Supabase is the only application data store. This browser does not retain players, sessions, bookings, or settings."),
     status,
     el("div", { class: "btn-row" }, syncBtn, reloadBtn),
   );
@@ -194,7 +194,7 @@ function cloudDatabaseSection(ctx) {
 function cloudStatusText(status) {
   switch (status.state) {
     case "empty":
-      return "Connected. The first administrator sign-in will upload this browser's data.";
+      return "Connected. Administrator sign-in is required to initialize the shared database.";
     case "pending":
       return "A cloud save is pending.";
     case "syncing":
@@ -205,15 +205,11 @@ function cloudStatusText(status) {
       return `Cloud database is current.${when}${version}`;
     }
     case "requires-auth":
-      return "Administrator sign-in is required before pending changes can sync.";
-    case "conflict":
-      return "Cloud data changed on another device. Export this browser's data or use Reload cloud data to discard its pending changes.";
-    case "cache-error":
-      return "Browser data is unreadable. Import a backup, clear all data, or reload cloud data before syncing.";
+      return "Administrator sign-in is required to save this change.";
     case "error":
       return status.error && status.error.message
         ? `Cloud save needs attention: ${status.error.message}`
-        : "Cloud storage is temporarily unavailable; the browser cache is still current.";
+        : "Cloud storage is temporarily unavailable. Reload the app to try again.";
     default:
       return "Cloud storage is ready.";
   }
@@ -597,7 +593,7 @@ async function confirmReset(container, ctx) {
   const ok = await ctx.confirmDialog({
     title: "Clear all data?",
     message: cloudBacked
-      ? "This removes every player, session, and booking from the shared database and this browser cache."
+      ? "This removes every player, session, and booking from the shared database."
       : "This removes every player, session, and booking from this browser.",
     confirmLabel: "Clear everything",
     tone: "danger",

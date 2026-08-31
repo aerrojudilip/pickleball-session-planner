@@ -1,6 +1,6 @@
 # Pickleball Session Planner
 
-A static, offline-first web app for managing pickleball players, booking court time, generating fair rotations, entering scores, and reviewing session statistics. It uses plain HTML, CSS, and JavaScript modules and can be hosted directly from a GitHub Pages repository.
+A static, cloud-backed web app for managing pickleball players, booking court time, generating fair rotations, entering scores, and reviewing session statistics. It uses plain HTML, CSS, and JavaScript modules and can be hosted directly from a GitHub Pages repository.
 
 ## Features
 
@@ -13,13 +13,13 @@ A static, offline-first web app for managing pickleball players, booking court t
 - Score validation, skipped games, per-court timers, and full-screen display mode
 - All-time and per-session statistics, chemistry, head-to-head records, and repeat heatmaps
 - Full session history with confirmed deletion, print layouts, and JSON/CSV/text exports
-- Supabase multi-device persistence, local offline cache, optional GitHub backup, and schema-checked imports
+- Supabase-only multi-device data persistence, optional GitHub backup, and schema-checked imports
 - Installable PWA with an offline app shell and light/dark themes
 - Session-scoped administrator access through the More tab for cloud sync and protected settings
 
 ## Administrator Access
 
-Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player and session changes require authentication. Starting, scoring, editing, or deleting a session while signed out opens More and resumes the action after sign-in. Other changes made while signed out remain in the browser's offline queue until an administrator signs in through More; Supabase rejects anonymous cloud writes.
+Players, Schedule, Play, and Stats open without a login. Only the More tab displays administrator sign-in. The username is `admin`; when Supabase is configured, it maps to the Auth user named in [js/config.js](js/config.js). Authentication lasts for the current browser tab and can be ended with the lock button in the header. In a cloud-configured deployment, player, booking, session, and settings changes require authentication. Starting one of these changes while signed out opens More and resumes the intended action after sign-in. Supabase rejects anonymous writes.
 
 Supabase Auth issues the session token and Row Level Security enforces administrator-only inserts and updates at the database. The browser never receives the database password, a password-derived verifier, or a service-role key. If Supabase is left unconfigured, public statistics and existing cached data remain readable, but administrator actions cannot be unlocked unless a host application explicitly injects its own authentication provider.
 
@@ -42,7 +42,7 @@ const deployedConfig = {
 export const SUPABASE_CONFIG = Object.freeze(deployedConfig);
 ```
 
-6. Commit and deploy the configuration. Open the app, sign in as `admin`, and select **More > Cloud database > Sync now**. If the table is empty, the first administrator sign-in also uploads the current browser database automatically.
+6. Commit and deploy the configuration. Open the app and sign in as `admin`. If the table is empty, the first administrator sign-in initializes it with the built-in sample players. Use **More > Cloud database > Sync now** to request an immediate save after later changes.
 
 The supplied read policy is public so players and read-only statistics can load on any device without a login. Because the app stores one complete JSON document, player names, notes, bookings, sessions, and scores are consequently readable through the public API. Do not put confidential information in this deployment. For private data, remove `anon` from the select grant and policy in [supabase/schema.sql](supabase/schema.sql); public data will then require authentication too.
 
@@ -102,15 +102,15 @@ All application URLs are relative, and `.nojekyll` is included, so no build step
 
 ### Primary: Supabase
 
-When configured, Supabase is the shared source of truth. Startup loads the remote JSONB document before the browser cache unless that cache contains pending offline changes. A markerless cache from an older release is treated as pending during the first cloud-enabled startup, so migration cannot silently replace it. Cloud writes are debounced, serialized, and sent with the administrator's Auth token. A monotonically increasing version prevents a stale device from silently overwriting a newer document. After a conflict, export the browser copy if it is needed, or choose **Reload cloud data** and explicitly confirm that its pending changes may be discarded.
+When configured, Supabase is the only durable application data store. Every startup deletes legacy planner data and sync markers from browser storage, then loads the remote JSONB document. If Supabase is unavailable, the app does not fall back to stale browser records. Cloud writes are debounced, serialized, and sent with the administrator's Auth token. A monotonically increasing version prevents a stale page from overwriting a newer document; if another device saves first, the stale page automatically reloads the latest database instead of showing a browser-data conflict prompt.
 
 The free tier is sufficient for this app's single-document workload. Auth credentials and tokens are not part of the application database or JSON exports.
 
-### Offline Cache: Browser Storage
+### Standalone Mode: Browser Storage
 
-The complete database is also cached as JSON in `localStorage` under `pickleball.db.v1`. Every mutation atomically stores the document with its internal cloud version and pending marker; failed writes are retried when the page is hidden. If Supabase cannot be reached, startup uses this cache and failed cloud writes remain safe locally. Internal sync metadata is omitted from exports. Browser storage belongs to one browser profile on one device; clearing site data removes the cache.
+Browser database storage is active only when Supabase has not been configured, such as an explicitly standalone development build. In that mode, the complete database is stored as JSON in `localStorage` under `pickleball.db.v1`. The deployed cloud configuration neither reads nor writes this planner key except to delete data left by older releases.
 
-Use **More > Data backup > Export all data** regularly. Imports support merge or replace and reject unsupported schema versions. GitHub credentials are kept under a separate key and are never included in data exports.
+Use **More > Data backup > Export all data** regularly. Imports support merge or replace and reject unsupported schema versions. Supabase Auth tokens remain in session storage for authentication, and optional GitHub credentials use a separate browser key; neither is application data nor included in exports.
 
 ### Optional: GitHub Repository Backup
 
@@ -139,7 +139,7 @@ The token is stored only in this browser's `localStorage`; it is never placed in
 
 ## PWA And Offline Use
 
-Visit the deployed app once while online so the service worker can cache the app shell. Supported browsers can then install it from their normal **Install app** or **Add to Home Screen** action. Offline mode covers the application itself and cached data; Supabase synchronization and GitHub backup require a network connection.
+Visit the deployed app once while online so the service worker can cache the app shell. Supported browsers can then install it from their normal **Install app** or **Add to Home Screen** action. The shell can open offline, but players, bookings, sessions, scores, statistics, and settings require a Supabase connection and are not stored by the service worker.
 
 When a new service worker finishes installing, the app shows **A new version is ready**. Select **Update** to activate it and reload. If a browser has retained a much older development worker, clear this site's storage/service worker once and reload online.
 

@@ -11,7 +11,7 @@
 //
 // All paths are repository-relative so this works under a GitHub Pages subpath.
 
-const CACHE = "pickleball-v10";
+const CACHE = "pickleball-v11";
 
 const APP_SHELL = [
   "./",

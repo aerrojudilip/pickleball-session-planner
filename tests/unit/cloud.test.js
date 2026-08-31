@@ -2,16 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { createEmptyDatabase, DB_STORAGE_KEY } from "../../js/schema.js";
+import { createEmptyDatabase } from "../../js/schema.js";
 import { createStore } from "../../js/state.js";
-import { CLOUD_SYNC_FIELD } from "../../js/storage.js";
 import {
   createCloudPersister,
   createSupabaseBackend,
   SupabaseConflictError,
   SupabaseError,
   SUPABASE_SESSION_KEY,
-  SUPABASE_SYNC_KEY,
 } from "../../js/supabase.js";
 
 function memoryStorage() {
@@ -222,64 +220,68 @@ test("rejected refresh credentials clear the administrator session", async () =>
   assert.equal(backend.isAuthenticated(), false);
 });
 
-test("pending cache metadata restores the last cloud version after a restart", async () => {
+test("legacy browser sync metadata cannot choose the cloud write version", async () => {
   const sessionStorage = memoryStorage();
-  const syncStorage = memoryStorage();
+  const legacyStorage = memoryStorage();
   sessionStorage.setItem(SUPABASE_SESSION_KEY, JSON.stringify({
     projectUrl: "https://fixture.supabase.co",
     accessToken: "access",
     refreshToken: "refresh",
     expiresAt: Date.now() + 3600000,
   }));
-  syncStorage.setItem(SUPABASE_SYNC_KEY, JSON.stringify({
+  legacyStorage.setItem("pickleball.supabase.sync.v1", JSON.stringify({
     projectUrl: "https://fixture.supabase.co",
     stateId: "primary",
     pending: true,
     version: 6,
     updatedAt: null,
   }));
-  let request = null;
+  const requests = [];
+  const database = createEmptyDatabase();
   const backend = createSupabaseBackend({
     url: "https://fixture.supabase.co",
     anonKey: "public-anon-key",
     adminEmail: "admin@pickleball-planner.app",
   }, {
     storage: sessionStorage,
-    syncStorage,
+    syncStorage: legacyStorage,
     fetchImpl: async (url, init) => {
-      request = { url, init };
-      return jsonResponse([{ version: 7, updated_at: "2026-08-30T22:40:00.000Z" }]);
+      requests.push({ url, init });
+      if (init.method === "GET") {
+        return jsonResponse([{ document: database, version: 4, updated_at: "2026-08-30T22:39:00.000Z" }]);
+      }
+      return jsonResponse([{ version: 5, updated_at: "2026-08-30T22:40:00.000Z" }]);
     },
   });
 
-  assert.equal(backend.getSyncState().pending, true);
-  await backend.saveDatabase(createEmptyDatabase());
-  assert.equal(request.init.method, "PATCH");
-  assert.match(request.url, /version=eq.6/);
   assert.deepEqual(backend.getSyncState(), {
     projectUrl: "https://fixture.supabase.co",
     stateId: "primary",
     pending: false,
-    version: 7,
+    version: null,
+    updatedAt: null,
+  });
+  await backend.loadDatabase();
+  await backend.saveDatabase(database);
+  assert.equal(requests[1].init.method, "PATCH");
+  assert.match(requests[1].url, /version=eq.4/);
+  assert.doesNotMatch(requests[1].url, /version=eq.6/);
+  assert.deepEqual(backend.getSyncState(), {
+    projectUrl: "https://fixture.supabase.co",
+    stateId: "primary",
+    pending: false,
+    version: 5,
     updatedAt: "2026-08-30T22:40:00.000Z",
   });
 });
 
-test("loading newer cloud data does not rebase a pending local document", async () => {
+test("loading newer cloud data does not rebase a pending in-memory document", async () => {
   const sessionStorage = memoryStorage();
-  const syncStorage = memoryStorage();
   sessionStorage.setItem(SUPABASE_SESSION_KEY, JSON.stringify({
     projectUrl: "https://fixture.supabase.co",
     accessToken: "access",
     refreshToken: "refresh",
     expiresAt: Date.now() + 3600000,
-  }));
-  syncStorage.setItem(SUPABASE_SYNC_KEY, JSON.stringify({
-    projectUrl: "https://fixture.supabase.co",
-    stateId: "primary",
-    pending: true,
-    version: 3,
-    updatedAt: null,
   }));
   const requests = [];
   const backend = createSupabaseBackend({
@@ -288,7 +290,13 @@ test("loading newer cloud data does not rebase a pending local document", async 
     adminEmail: "admin@pickleball-planner.app",
   }, {
     storage: sessionStorage,
-    syncStorage,
+    syncState: {
+      projectUrl: "https://fixture.supabase.co",
+      stateId: "primary",
+      pending: true,
+      version: 3,
+      updatedAt: null,
+    },
     fetchImpl: async (url, init) => {
       requests.push({ url, init });
       if (init.method === "GET") {
@@ -387,33 +395,25 @@ test("Supabase schema enables RLS without granting anonymous writes", async () =
   assert.match(sql, /new\.version <> old\.version \+ 1/i);
 });
 
-test("a pending cache conflicts when the cloud advanced beyond its base version", async () => {
-  const localDatabase = createEmptyDatabase();
-  localDatabase.players.push({ id: "p-local", name: "Local Pending" });
+test("cloud reads do not access browser sync storage", async () => {
   const cloudDatabase = createEmptyDatabase();
   cloudDatabase.players.push({ id: "p-cloud", name: "Cloud Current" });
-  const syncStorage = memoryStorage();
-  syncStorage.setItem(DB_STORAGE_KEY, JSON.stringify({
-    ...localDatabase,
-    [CLOUD_SYNC_FIELD]: {
-      projectUrl: "https://fixture.supabase.co",
-      stateId: "primary",
-      pending: true,
-      version: 3,
-      updatedAt: null,
-    },
-  }));
+  const forbiddenStorage = {
+    getItem() { throw new Error("browser sync storage was read"); },
+    setItem() { throw new Error("browser sync storage was written"); },
+    removeItem() { throw new Error("browser sync storage was changed"); },
+  };
   const backend = createSupabaseBackend({
     url: "https://fixture.supabase.co",
     anonKey: "public-anon-key",
     adminEmail: "admin@pickleball-planner.app",
   }, {
     storage: memoryStorage(),
-    syncStorage,
+    syncStorage: forbiddenStorage,
     fetchImpl: async () => jsonResponse([{ document: cloudDatabase, version: 4, updated_at: null }]),
   });
 
-  await assert.rejects(backend.loadDatabase(), (error) => error instanceof SupabaseConflictError);
-  assert.equal(backend.getRemoteVersion(), 3);
-  assert.equal(JSON.parse(syncStorage.getItem(DB_STORAGE_KEY)).players[0].name, "Local Pending");
+  const loaded = await backend.loadDatabase();
+  assert.equal(loaded.database.players[0].name, "Cloud Current");
+  assert.equal(backend.getRemoteVersion(), 4);
 });

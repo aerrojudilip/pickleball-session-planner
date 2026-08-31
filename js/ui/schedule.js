@@ -292,6 +292,11 @@ function setMode(container, ctx, state, mode) {
 // Booking form
 // ---------------------------------------------------------------------------
 function openBookingForm(container, ctx, booking, prefill = {}) {
+  if (ctx.cloud.isConfigured() && !ctx.auth.isAuthenticated()) {
+    ctx.requireAdmin("booking management", () => openBookingForm(container, ctx, booking, prefill));
+    return;
+  }
+
   const { store } = ctx;
   const isEdit = Boolean(booking);
   const draft = {

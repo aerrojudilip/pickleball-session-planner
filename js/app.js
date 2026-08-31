@@ -1,20 +1,20 @@
 // app.js — bootstrap, routing, and global wiring.
 //
 // Responsibilities:
-//  - Load the database (or seed samples on first run) and build the store.
-//  - Wire atomic Tier-1 persistence and flush retries on page hide.
+//  - Load Supabase as the configured source of truth (or local standalone data).
+//  - Wire cloud persistence, with local persistence only when cloud is absent.
 //  - Apply the theme and react to OS theme changes.
 //  - Route between views and keep the nav in sync.
 //  - Global error surfacing and undo/redo buttons.
 //  - Register the service worker for offline/PWA support.
 
 import { createStore } from "./state.js";
-import { loadDatabase, createPersister, overwriteDatabase } from "./storage.js";
+import { clearDatabase, createPersister, loadDatabase } from "./storage.js";
 import { createEmptyDatabase, localDateString } from "./schema.js";
 import { bootstrapSamples } from "./samples.js";
 import { createAdminAuth } from "./auth.js";
 import { SUPABASE_CONFIG } from "./config.js";
-import { createCloudPersister, createSupabaseBackend, SupabaseConflictError } from "./supabase.js";
+import { createCloudPersister, createSupabaseBackend, SupabaseConflictError, SUPABASE_SYNC_KEY } from "./supabase.js";
 import { initFeedback, showToast, confirmDialog, openDialog } from "./ui/feedback.js";
 import { startOfWeek } from "./bookings.js";
 
@@ -49,45 +49,42 @@ async function boot() {
   const dialogRoot = document.getElementById("dialogRoot");
   initFeedback({ toast: toastRoot, dialog: dialogRoot });
 
-  // ---- Load remote, local cache, or samples ----
-  const load = loadDatabase();
-  const legacyLocal = Boolean(load.db && !load.syncState && SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey);
-  const initialSyncState = legacyLocal
-    ? {
-        projectUrl: SUPABASE_CONFIG.url,
-        stateId: SUPABASE_CONFIG.stateId || "primary",
-        pending: true,
-        version: null,
-        updatedAt: null,
-      }
-    : load.syncState;
-  const cloudBackend = createSupabaseBackend(SUPABASE_CONFIG, { syncState: initialSyncState });
-  if (legacyLocal) {
+  // ---- Load the configured cloud database, or use local storage in standalone builds ----
+  const configuredSyncState = {
+    projectUrl: SUPABASE_CONFIG.url,
+    stateId: SUPABASE_CONFIG.stateId || "primary",
+    pending: false,
+    version: null,
+    updatedAt: null,
+  };
+  const cloudBackend = createSupabaseBackend(SUPABASE_CONFIG, { syncState: configuredSyncState });
+  const cloudConfigured = cloudBackend.isConfigured();
+  const load = cloudConfigured ? { db: null, corrupt: false } : loadDatabase();
+  if (cloudConfigured) {
     try {
-      overwriteDatabase(load.db, cloudBackend.getSyncState());
+      clearDatabase();
+      localStorage.removeItem(SUPABASE_SYNC_KEY);
     } catch {
-      queueMicrotask(() => showToast("Existing browser data could not be marked for cloud migration.", { tone: "danger", duration: 10000 }));
+      // Browser storage is not required for a configured cloud deployment.
     }
   }
   let cloudLoad = null;
   let cloudLoadError = null;
-  if (cloudBackend.isConfigured() && !load.corrupt) {
+  if (cloudConfigured) {
     try {
       cloudLoad = await cloudBackend.loadDatabase();
     } catch (error) {
       cloudLoadError = error;
     }
   }
-  const hasPendingLocal = Boolean(load.db && cloudBackend.getSyncState().pending);
 
   let initialDb;
-  if (cloudLoad && cloudLoad.database && !hasPendingLocal) {
+  if (cloudLoad && cloudLoad.database) {
     initialDb = cloudLoad.database;
-    try {
-      overwriteDatabase(initialDb, cloudBackend.getSyncState());
-    } catch {
-      queueMicrotask(() => showToast("Cloud data loaded, but this browser could not update its offline cache.", { tone: "danger", duration: 10000 }));
-    }
+  } else if (cloudConfigured && cloudLoadError) {
+    initialDb = createEmptyDatabase();
+  } else if (cloudConfigured) {
+    initialDb = await bootstrapSamples();
   } else if (load.corrupt) {
     initialDb = createEmptyDatabase();
     // Defer the warning until UI is ready.
@@ -105,32 +102,19 @@ async function boot() {
 
   const store = createStore(initialDb);
   const auth = createAdminAuth({ backend: cloudBackend });
-  const syncState = cloudBackend.getSyncState();
-  let cloudSyncBlocked = load.corrupt;
-  let cloudStatus = cloudBackend.isConfigured()
-    ? load.corrupt
-      ? { state: "cache-error" }
-      : cloudLoadError
-      ? cloudLoadError instanceof SupabaseConflictError
-        ? { state: "conflict", error: cloudLoadError }
-        : { state: "error", error: cloudLoadError }
-      : hasPendingLocal
-        ? {
-            state: cloudBackend.isAuthenticated() ? "pending" : "requires-auth",
-            version: syncState.version,
-            updatedAt: syncState.updatedAt,
-          }
+  let cloudStatus = cloudConfigured
+    ? cloudLoadError
+      ? { state: "error", error: cloudLoadError }
       : cloudLoad && cloudLoad.database
         ? { state: "synced", version: cloudLoad.version, updatedAt: cloudLoad.updatedAt }
         : { state: "empty" }
     : { state: "not-configured" };
   const cloudStatusListeners = new Set();
   let pendingAdminAction = null;
+  let conflictRecovery = null;
 
   if (cloudLoadError) {
-    const message = cloudLoadError instanceof SupabaseConflictError
-      ? cloudLoadError.message
-      : "Cloud data is unavailable. Using this browser's offline cache.";
+    const message = "Cloud data is unavailable. Reload the app to try again.";
     queueMicrotask(() => showToast(message, { tone: "danger", duration: 10000 }));
   }
 
@@ -142,21 +126,23 @@ async function boot() {
   store.setUi({ calendarWeekStart: startOfWeek(localDateString()) });
 
   // ---- Persistence ----
-  let persister = null;
   const cloudPersister = createCloudPersister(store, cloudBackend, {
-    markPending: false,
-    canPersist: () => !cloudSyncBlocked,
     onStatus: (status) => {
-      cloudStatus = { ...cloudStatus, ...status, error: status.error || null };
-      if (status.state === "synced" && persister) persister.writeNow();
+      if (status.error instanceof SupabaseConflictError) {
+        cloudStatus = { state: "syncing", error: null };
+      } else {
+        cloudStatus = { ...cloudStatus, ...status, error: status.error || null };
+      }
       for (const listener of cloudStatusListeners) listener({ ...cloudStatus });
     },
     onError: (error) => {
-      const message = error instanceof SupabaseConflictError
-        ? error.message
-        : error.status === 401
-          ? "Your administrator session expired. Sign in again; the browser copy is still safe."
-          : "Cloud save failed. The change remains saved in this browser.";
+      if (error instanceof SupabaseConflictError) {
+        void recoverCloudConflict().catch(() => {});
+        return;
+      }
+      const message = error.status === 401
+          ? "Your administrator session expired. Sign in again to retry the unsaved change."
+          : "Cloud save failed. This change has not been stored; try again before leaving.";
       showToast(message, { tone: "danger", duration: 12000 });
       if (error.status === 401) {
         updateAuthControls();
@@ -164,7 +150,7 @@ async function boot() {
       }
     },
   });
-  persister = createPersister(store, (err) => {
+  const persister = cloudConfigured ? null : createPersister(store, (err) => {
     const quota = err && (err.name === "QuotaExceededError" || /quota/i.test(err.message || ""));
     showToast(
       quota
@@ -172,26 +158,20 @@ async function boot() {
         : "Could not save to this browser's storage.",
       { tone: "danger", duration: 12000 },
     );
-  }, {
-    onMutation: () => cloudBackend.markPending(),
-    getSyncState: () => cloudBackend.getSyncState(),
   });
-  if (cloudPersister.hasPending() && cloudBackend.isAuthenticated() && cloudStatus.state !== "conflict") {
-    queueMicrotask(() => void cloudPersister.flush().catch(() => {}));
-  }
   window.addEventListener("pagehide", () => {
-    persister.flush();
+    if (persister) persister.flush();
     void cloudPersister.flush();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
-      persister.flush();
+      if (persister) persister.flush();
       void cloudPersister.flush();
     }
   });
 
   // ---- Cross-tab awareness ----
-  window.addEventListener("storage", (e) => {
+  if (!cloudConfigured) window.addEventListener("storage", (e) => {
     if (e.key === "pickleball.db.v1" && e.newValue) {
       showToast("This data was updated in another tab.", {
         actionLabel: "Reload",
@@ -229,11 +209,10 @@ async function boot() {
         return () => cloudStatusListeners.delete(listener);
       },
       syncNow: () => {
-        if (cloudSyncBlocked) throw new Error("Import, clear, or reload the unreadable browser data before syncing.");
-        return cloudPersister.syncNow();
+        return syncCloudNow();
       },
       reload: reloadCloudData,
-      resolveCache: () => { cloudSyncBlocked = false; },
+      resolveCache: () => {},
     },
   };
 
@@ -291,34 +270,45 @@ async function boot() {
   }
 
   async function afterAdminSignIn() {
-    if (cloudBackend.isConfigured() && cloudStatus.state !== "conflict" && (cloudStatus.state === "empty" || cloudPersister.hasPending())) {
+    if (cloudBackend.isConfigured() && (cloudStatus.state === "empty" || cloudPersister.hasPending())) {
       try {
         await cloudPersister.syncNow();
       } catch {
-        // The persister already surfaced the error and kept the local copy dirty.
+        // The persister surfaced the error and kept the current page dirty for retry.
       }
     }
     if (pendingAdminAction) navigate(pendingAdminAction.route);
   }
 
   async function reloadCloudData() {
-    if (cloudSyncBlocked || cloudBackend.getSyncState().pending) {
-      const confirmed = await confirmDialog({
-        title: "Use cloud data?",
-        message: "This discards unreadable or pending data saved only in this browser and replaces it with the latest cloud database.",
-        confirmLabel: "Use cloud data",
-        tone: "danger",
-      });
-      if (!confirmed) return false;
-    }
-
     const latest = await cloudBackend.loadDatabase({ allowConflict: true });
     const result = { ...latest, database: latest.database || createEmptyDatabase() };
-    cloudBackend.acceptRemote(result, overwriteDatabase);
-    cloudSyncBlocked = false;
+    cloudBackend.acceptRemote(result);
     cloudPersister.markClean();
     location.reload();
     return true;
+  }
+
+  async function syncCloudNow() {
+    try {
+      return await cloudPersister.syncNow();
+    } catch (error) {
+      if (!(error instanceof SupabaseConflictError)) throw error;
+      await recoverCloudConflict();
+      return null;
+    }
+  }
+
+  function recoverCloudConflict() {
+    if (!conflictRecovery) {
+      conflictRecovery = reloadCloudData()
+        .catch((error) => {
+          showToast("Could not refresh the latest cloud data. Reload the app to try again.", { tone: "danger", duration: 10000 });
+          throw error;
+        })
+        .finally(() => { conflictRecovery = null; });
+    }
+    return conflictRecovery;
   }
 
   function updateAuthControls() {

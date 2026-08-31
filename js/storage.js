@@ -1,8 +1,7 @@
-// storage.js — Tier 1 persistence: the full JSON document in localStorage.
+// storage.js — standalone persistence when Supabase is not configured.
 //
-// Each mutation atomically stores the document and cloud-sync metadata.
-// Corrupt JSON is preserved (never silently overwritten) so the user can
-// choose to reset or import. Failed writes remain pending for a later flush.
+// Each mutation atomically stores the full JSON document. Configured cloud
+// deployments delete legacy planner data and do not call this persister.
 //
 // This module touches localStorage only; it has no other DOM dependencies.
 

@@ -125,8 +125,9 @@ test.describe("core browser journeys", () => {
     const errors = collectBrowserErrors(page);
 
     await page.goto("/#roster");
-    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Source");
     await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit Cloud Source" })).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
     await page.getByRole("button", { name: /Add player/ }).click();
     await expect(page).toHaveURL(/#more$/);
     await expect(page.getByRole("heading", { name: "Administrator sign in" })).toBeVisible();
@@ -148,6 +149,7 @@ test.describe("core browser journeys", () => {
     expect(patchRequest.headers.authorization).toBe("Bearer cloud-access");
     expect(patchRequest.body.version).toBe(4);
     expect(patchRequest.body.document.players.some((player) => player.name === "Cloud Added")).toBe(true);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
 
     await page.getByRole("button", { name: "More" }).click();
     const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
@@ -155,14 +157,14 @@ test.describe("core browser journeys", () => {
     await expect.poll(() => patchRequests.length).toBe(2);
     await expect(cloudSection.getByRole("status")).toContainText("Version 5.");
 
-    await page.evaluate((databaseKey) => {
-      localStorage.removeItem(databaseKey);
+    await page.evaluate(() => {
       sessionStorage.clear();
       sessionStorage.setItem("pickleball.e2e.seeded", "1");
-    }, DB_KEY);
+    });
     await page.goto("/?fresh=players#roster");
     await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit Cloud Added" })).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
 
     await page.getByRole("button", { name: "Play", exact: true }).click();
     await page.getByRole("button", { name: /New session/ }).click();
@@ -187,15 +189,15 @@ test.describe("core browser journeys", () => {
     await expect.poll(() => patchRequests.length).toBe(4);
     expect(patchRequests[3].body.document.sessions[0].rounds[0].courts[0].score).toEqual({ a: 11, b: 7 });
 
-    await page.evaluate((databaseKey) => {
-      localStorage.removeItem(databaseKey);
+    await page.evaluate(() => {
       sessionStorage.clear();
       sessionStorage.setItem("pickleball.e2e.seeded", "1");
-    }, DB_KEY);
+    });
     await page.goto("/?fresh=session#session");
     await expect(page.getByRole("heading", { name: "Cloud Session" })).toBeVisible();
     await expect(page.getByText("Done", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Score: 11 – 7" })).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
 
     await page.getByRole("button", { name: "Sessions" }).click();
     await page.getByRole("button", { name: "Delete Cloud Session" }).click();
@@ -208,23 +210,22 @@ test.describe("core browser journeys", () => {
     expect(patchRequests[4].body.version).toBe(8);
     expect(patchRequests[4].body.document.sessions).toEqual([]);
 
-    await page.evaluate((databaseKey) => {
-      localStorage.removeItem(databaseKey);
+    await page.evaluate(() => {
       sessionStorage.clear();
       sessionStorage.setItem("pickleball.e2e.seeded", "1");
-    }, DB_KEY);
+    });
     await page.goto("/?fresh=deleted-session#session");
     await expect(page.getByRole("heading", { name: "Play" })).toBeVisible();
     await expect(page.getByText("No sessions yet.")).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
     expect(errors).toEqual([]);
   });
 
-  test("a pending local cache conflicts instead of overwriting a newer cloud version", async ({ page }) => {
+  test("configured Supabase ignores stale pending browser data without a conflict warning", async ({ page }) => {
     const localDatabase = createTestDatabase();
     localDatabase.players[0].name = "Local Pending";
     const cloudDatabase = createTestDatabase();
     cloudDatabase.players[0].name = "Cloud Current";
-    let patchRequest = null;
 
     await seedDatabase(page, localDatabase, {
       authenticated: false,
@@ -236,6 +237,38 @@ test.describe("core browser journeys", () => {
         updatedAt: "2026-08-30T22:00:00.000Z",
       },
     });
+    await configureCloud(page);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      const request = route.request();
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "apikey, authorization, content-type, prefer",
+        "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+      };
+      if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
+        });
+      } else {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+      }
+    });
+
+    await page.goto("/#roster");
+    await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit Local Pending" })).toHaveCount(0);
+    await expect(page.getByText(/Cloud data changed on another device/)).toHaveCount(0);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
+  });
+
+  test("a live cloud version conflict refreshes silently from Supabase", async ({ page }) => {
+    let cloudDatabase = createTestDatabase();
+    cloudDatabase.players[0].name = "Cloud Before";
+    let cloudVersion = 4;
+    let patchCount = 0;
     await configureCloud(page);
     await page.route("https://fixture.supabase.co/**", async (route) => {
       const request = route.request();
@@ -258,54 +291,120 @@ test.describe("core browser journeys", () => {
           status: 200,
           contentType: "application/json",
           headers: corsHeaders,
-          body: JSON.stringify([{ document: cloudDatabase, version: 4, updated_at: "2026-08-30T22:30:00.000Z" }]),
+          body: JSON.stringify([{ document: cloudDatabase, version: cloudVersion, updated_at: "2026-08-30T22:30:00.000Z" }]),
         });
       } else if (request.method() === "PATCH") {
-        patchRequest = { url: request.url(), body: request.postDataJSON() };
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          headers: corsHeaders,
-          body: JSON.stringify([]),
-        });
+        patchCount += 1;
+        cloudDatabase = createTestDatabase();
+        cloudDatabase.players[0].name = "Cloud After";
+        cloudVersion = 5;
+        await route.fulfill({ status: 200, contentType: "application/json", headers: corsHeaders, body: "[]" });
       } else {
         await route.fulfill({ status: 204, headers: corsHeaders });
       }
     });
 
     await page.goto("/#roster");
-    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Local Pending");
-    await expect(page.getByRole("button", { name: "Edit Local Pending" })).toBeVisible();
-    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("button", { name: /Add player/ }).click();
     await page.getByLabel("Password").fill("browser-secret");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    expect(patchRequest).toBeNull();
+    const dialog = page.getByRole("dialog", { name: "Add player" });
+    await dialog.locator("#pf-name").fill("Conflicting Local Change");
+    await dialog.getByRole("button", { name: "Add", exact: true }).click();
 
-    const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
-    await expect(cloudSection.getByRole("status")).toContainText("changed on another device");
-    await cloudSection.getByRole("button", { name: "Sync now" }).click();
-    await expect.poll(() => Boolean(patchRequest)).toBe(true);
-    expect(patchRequest.url).toContain("version=eq.3");
-    expect(patchRequest.body.document.players[0].name).toBe("Local Pending");
-    await expect(page.getByText(/Cloud data changed on another device/)).toBeVisible();
-    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Local Pending");
-
-    await cloudSection.getByRole("button", { name: "Reload cloud data" }).click();
-    const confirm = page.getByRole("dialog", { name: "Use cloud data?" });
-    await confirm.getByRole("button", { name: "Use cloud data" }).click();
-    await page.getByRole("button", { name: "Players", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
-    await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key)).players[0].name, DB_KEY)).toBe("Cloud Current");
+    await expect(page.getByRole("button", { name: "Edit Cloud After" })).toBeVisible();
+    expect(patchCount).toBe(1);
+    await expect(page.getByText(/Cloud data changed on another device/)).toHaveCount(0);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
   });
 
-  test("a markerless legacy cache is preserved when cloud storage is first enabled", async ({ page }) => {
+  test("configured Supabase authenticates and stores bookings only in the database", async ({ page }) => {
+    let cloudDatabase = createTestDatabase();
+    let cloudVersion = 2;
+    const patches = [];
+    await configureCloud(page);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      const request = route.request();
+      const corsHeaders = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "apikey, authorization, content-type, prefer",
+        "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+      };
+      if (request.method() === "OPTIONS") {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+      } else if (request.url().includes("/auth/v1/token")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify({ access_token: "cloud-access", refresh_token: "cloud-refresh", expires_in: 3600 }),
+        });
+      } else if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ document: cloudDatabase, version: cloudVersion, updated_at: "2026-08-30T22:30:00.000Z" }]),
+        });
+      } else if (request.method() === "PATCH") {
+        const body = request.postDataJSON();
+        patches.push(body);
+        cloudDatabase = body.document;
+        cloudVersion += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify([{ version: cloudVersion, updated_at: "2026-08-30T22:31:00.000Z" }]),
+        });
+      } else {
+        await route.fulfill({ status: 204, headers: corsHeaders });
+      }
+    });
+
+    await page.goto("/#schedule");
+    await page.getByRole("button", { name: /Book court/ }).click();
+    await expect(page).toHaveURL(/#more$/);
+    await page.getByLabel("Password").fill("browser-secret");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page).toHaveURL(/#schedule$/);
+    const dialog = page.getByRole("dialog", { name: "Book court time" });
+    await dialog.getByPlaceholder("e.g. Saturday Open Play").fill("DB Booking");
+    await dialog.getByRole("button", { name: "Add booking" }).click();
+
+    await expect.poll(() => patches.length).toBe(1);
+    expect(patches[0].document.bookings.some((booking) => booking.name === "DB Booking")).toBe(true);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
+  });
+
+  test("configured Supabase never falls back to markerless browser data when cloud is unavailable", async ({ page }) => {
     const localDatabase = createTestDatabase();
     localDatabase.players[0].name = "Legacy Local";
-    const cloudDatabase = createTestDatabase();
-    cloudDatabase.players[0].name = "Cloud Current";
     await seedDatabase(page, localDatabase, { authenticated: false });
     await configureCloud(page);
     await page.route("https://fixture.supabase.co/**", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "temporarily unavailable" }),
+      });
+    });
+
+    await page.goto("/#roster");
+    await expect(page.getByRole("heading", { name: "Players" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit Legacy Local" })).toHaveCount(0);
+    await expect(page.getByText("Cloud data is unavailable. Reload the app to try again.")).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
+  });
+
+  test("configured Supabase deletes corrupt browser data and loads the cloud database", async ({ page }) => {
+    const cloudDatabase = createTestDatabase();
+    cloudDatabase.players[0].name = "Cloud Current";
+    let cloudRequests = 0;
+    await configureCloud(page);
+    await page.addInitScript((key) => localStorage.setItem(key, "{broken"), DB_KEY);
+    await page.route("https://fixture.supabase.co/**", async (route) => {
+      cloudRequests += 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -313,45 +412,11 @@ test.describe("core browser journeys", () => {
       });
     });
 
-    await page.goto("/#stats");
-    await expect(page.getByText(/Cloud data changed on another device/)).toBeVisible();
-    const cached = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), DB_KEY);
-    expect(cached.players[0].name).toBe("Legacy Local");
-    expect(cached._cloudSync).toMatchObject({ pending: true, version: null, stateId: "primary" });
-  });
-
-  test("corrupt local data is preserved without loading cloud data over it", async ({ page }) => {
-    let cloudRequests = 0;
-    await configureCloud(page);
-    await page.addInitScript((key) => localStorage.setItem(key, "{broken"), DB_KEY);
-    await page.route("https://fixture.supabase.co/**", async (route) => {
-      if (route.request().url().includes("/auth/v1/token")) {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ access_token: "cloud-access", refresh_token: "cloud-refresh", expires_in: 3600 }),
-        });
-        return;
-      }
-      cloudRequests += 1;
-      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
-    });
-
-    await page.goto("/#stats");
-    await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
-    await expect(page.getByText(/Saved data was unreadable/)).toBeVisible();
-    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
-    expect(cloudRequests).toBe(0);
-
-    await page.getByRole("button", { name: "More" }).click();
-    await page.getByLabel("Password").fill("browser-secret");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    const cloudSection = page.locator(".settings-section").filter({ hasText: "Cloud database" });
-    await expect(cloudSection.getByRole("status")).toContainText("Browser data is unreadable");
-    await cloudSection.getByRole("button", { name: "Sync now" }).click();
-    await expect(cloudSection.getByRole("status")).toContainText("before syncing");
-    expect(cloudRequests).toBe(0);
-    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBe("{broken");
+    await page.goto("/#roster");
+    await expect(page.getByRole("button", { name: "Edit Cloud Current" })).toBeVisible();
+    await expect(page.getByText(/Saved data was unreadable/)).toHaveCount(0);
+    expect(await page.evaluate((key) => localStorage.getItem(key), DB_KEY)).toBeNull();
+    expect(cloudRequests).toBe(1);
   });
 
   test("375px Players stays usable and a new player persists after reload", async ({ page }) => {

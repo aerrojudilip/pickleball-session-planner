@@ -3,11 +3,10 @@
 // The publishable/anon key identifies the public app; Row Level Security is
 // the authorization boundary. Access and refresh tokens stay in sessionStorage.
 
-import { checkSchemaVersion, DB_STORAGE_KEY, normalizeDatabase } from "./schema.js";
-import { CLOUD_SYNC_FIELD } from "./storage.js";
+import { checkSchemaVersion, normalizeDatabase } from "./schema.js";
 
 export const SUPABASE_SESSION_KEY = "pickleball.supabase.session.v1";
-// Read-only migration fallback for development builds that used a separate key.
+// Legacy key removed by configured deployments during startup.
 export const SUPABASE_SYNC_KEY = "pickleball.supabase.sync.v1";
 
 export class SupabaseError extends Error {
@@ -20,7 +19,7 @@ export class SupabaseError extends Error {
 }
 
 export class SupabaseConflictError extends SupabaseError {
-  constructor(message = "Cloud data changed on another device. Review or discard this browser's pending changes before syncing.") {
+  constructor(message = "Cloud write version conflict.") {
     super(message, { status: 409, code: "version_conflict" });
     this.name = "SupabaseConflictError";
   }
@@ -30,14 +29,9 @@ export function createSupabaseBackend(options = {}, dependencies = {}) {
   const config = normalizeConfig(options);
   const fetchImpl = dependencies.fetchImpl || globalThis.fetch;
   const storage = dependencies.storage || globalThis.sessionStorage;
-  const syncStorage = dependencies.syncStorage || globalThis.localStorage;
   const now = dependencies.now || Date.now;
   let session = readSession(storage, config.url);
-  let syncState = normalizeSyncState(
-    dependencies.syncState || readSyncState(syncStorage, config.url, config.stateId),
-    config.url,
-    config.stateId,
-  );
+  let syncState = normalizeSyncState(dependencies.syncState, config.url, config.stateId);
   let remoteVersion = syncState.version;
   let observedRemoteVersion = null;
   let pendingGeneration = syncState.pending ? 1 : 0;
@@ -454,18 +448,6 @@ function writeSession(storage, session) {
     else storage.removeItem(SUPABASE_SESSION_KEY);
   } catch {
     // Storage restrictions do not prevent the in-memory session from working.
-  }
-}
-
-function readSyncState(storage, projectUrl, stateId) {
-  const empty = { projectUrl, stateId, pending: false, version: null, updatedAt: null };
-  if (!storage || !projectUrl) return empty;
-  try {
-    const cached = JSON.parse(storage.getItem(DB_STORAGE_KEY));
-    if (cached && typeof cached[CLOUD_SYNC_FIELD] === "object") return cached[CLOUD_SYNC_FIELD];
-    return JSON.parse(storage.getItem(SUPABASE_SYNC_KEY)) || empty;
-  } catch {
-    return empty;
   }
 }
 
